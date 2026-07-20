@@ -7,6 +7,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -20,7 +21,7 @@ class FileBrowserClient {
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
     ): Result<File> = runCatching {
         require(remotePath.isNotBlank()) { "Remote path is required" }
-        val connection = open(apiUrl(profile, "/api/raw", remotePath), "GET")
+        val connection = open(rawUrl(profile, remotePath), "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
         require(connection.responseCode in 200..299) { "Download failed (${connection.responseCode})" }
 
@@ -115,6 +116,31 @@ class FileBrowserClient {
                 val item = array.getJSONObject(index)
                 add(RemoteResource(item.optString("name"), item.optString("path", path), item.optBoolean("isDir"), item.optLong("size")))
             }
+        }
+    }
+
+    fun rawUrl(profile: ServerProfile, remotePath: String): String =
+        apiUrl(profile, "/api/raw", remotePath)
+
+    fun readText(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        maxBytes: Int = 1_000_000,
+    ): Result<String> = runCatching {
+        val connection = open(rawUrl(profile, remotePath), "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        require(connection.responseCode in 200..299) { "Unable to open file (${connection.responseCode})" }
+        connection.inputStream.buffered().use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (output.size() <= maxBytes) {
+                val count = input.read(buffer, 0, minOf(buffer.size, maxBytes + 1 - output.size()))
+                if (count < 0) break
+                output.write(buffer, 0, count)
+            }
+            require(output.size() <= maxBytes) { "Text file is too large to preview" }
+            output.toString(Charsets.UTF_8.name())
         }
     }
 

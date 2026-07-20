@@ -1,4 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">File Server</string>
+    <string name="your_servers">Máy chủ của bạn</string>
+    <string name="add_server">Thêm máy chủ</string>
+    <string name="server_address">Địa chỉ máy chủ</string>
+    <string name="display_name">Tên hiển thị</string>
+    <string name="save_server">Lưu máy chủ</string>
+    <string name="sign_in">Đăng nhập</string>
+    <string name="username">Tên đăng nhập</string>
+    <string name="password">Mật khẩu</string>
+    <string name="connecting">Đang kết nối…</string>
+    <string name="online">Trực tuyến</string>
+    <string name="offline">Ngoại tuyến</string>
+    <string name="folder">Thư mục</string>
+    <string name="list">Danh sách</string>
+    <string name="items_count">%1$d mục</string>
+    <string name="transfers">Truyền tệp</string>
+    <string name="settings">Cài đặt</string>
+    <string name="no_transfers">Chưa có tác vụ truyền tệp</string>
+    <string name="theme">Giao diện</string>
+    <string name="theme_system">Theo hệ thống</string>
+    <string name="theme_light">Sáng</string>
+    <string name="theme_dark">Tối</string>
+    <string name="show_hidden">Hiện tệp ẩn</string>
+    <string name="open_transfers">Mở danh sách truyền tệp</string>
+    <string name="download">Tải xuống</string>
+    <string name="upload">Tải lên</string>
+    <string name="delete">Xóa</string>
+    <string name="server_empty">Chưa có máy chủ. Hãy thêm máy chủ để bắt đầu.</string>
+    <string name="http_warning">HTTP không mã hóa dữ liệu. Chỉ tiếp tục trong mạng tin cậy.</string>
+    <string name="connection_failed">Không thể kết nối: %1$s</string>
+    <string name="preview_unsupported">Không hỗ trợ xem trước định dạng này.</string>
 </resources>
