@@ -31,6 +31,7 @@
     <string name="http_warning">HTTP không mã hóa dữ liệu. Chỉ tiếp tục trong mạng tin cậy.</string>
     <string name="connection_failed">Không thể kết nối: %1$s</string>
     <string name="preview_unsupported">Không hỗ trợ xem trước định dạng này.</string>
+    <string name="preview_open_anyway">Mở dù vậy</string>
     <string name="language">Ngôn ngữ</string>
     <string name="language_vietnamese">Tiếng Việt</string>
     <string name="language_english">English</string>

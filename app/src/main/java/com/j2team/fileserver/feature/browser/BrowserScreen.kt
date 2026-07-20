@@ -57,7 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.j2team.fileserver.AppBar
-import com.j2team.fileserver.PreviewScreen
+import com.j2team.fileserver.feature.preview.PreviewScreen
 import com.j2team.fileserver.R
 import com.j2team.fileserver.folderIconResource
 import com.j2team.fileserver.formatBytes

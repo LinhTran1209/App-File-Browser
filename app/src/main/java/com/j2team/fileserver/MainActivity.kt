@@ -1,6 +1,5 @@
 package com.j2team.fileserver
 
-import android.graphics.BitmapFactory
 import android.app.LocaleManager
 import android.content.Context
 import android.content.ContentResolver
@@ -10,8 +9,6 @@ import android.os.Bundle
 import android.os.Build
 import android.os.LocaleList
 import android.provider.DocumentsContract
-import android.widget.MediaController
-import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -28,7 +25,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -50,8 +46,7 @@ import com.j2team.fileserver.core.ui.FileServerTheme
 import com.j2team.fileserver.core.ui.AppIcons
 import com.j2team.fileserver.feature.browser.BrowserPath
 import com.j2team.fileserver.feature.browser.BrowserScreen
-import com.j2team.fileserver.feature.preview.PreviewKind
-import com.j2team.fileserver.feature.preview.PreviewRouter
+import com.j2team.fileserver.feature.preview.PreviewScreen
 import com.j2team.fileserver.feature.servers.ServerStore
 import com.j2team.fileserver.feature.settings.AppSettings
 import com.j2team.fileserver.feature.settings.AppTheme
@@ -501,66 +496,6 @@ private fun FileRow(item: RemoteResource, settings: AppSettings, onOpen: () -> U
             if (item.isDirectory) Text("›", style = MaterialTheme.typography.titleLarge)
             else IconButton(onClick = onDownload, modifier = Modifier.size(48.dp)) { Icon(painterResource(AppIcons.Download), stringResource(R.string.download)) }
         }
-    }
-}
-
-@Composable
-internal fun PreviewScreen(
-    profile: ServerProfile,
-    item: RemoteResource,
-    transferStore: TransferStore,
-    sessionRepository: SessionRepository,
-    onBack: () -> Unit,
-) {
-    val context = LocalContext.current
-    val kind = PreviewRouter.kind(item.name)
-    var text by remember { mutableStateOf<String?>(null) }
-    var bitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    var mediaFile by remember { mutableStateOf<File?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(item.path) {
-        when (kind) {
-            PreviewKind.Text -> withContext(Dispatchers.IO) { sessionRepository.readText(profile, item.path) }.onSuccess { text = it }.onFailure { error = it.message }
-            PreviewKind.Image -> {
-                val file = File(context.cacheDir, "preview-${item.name.hashCode()}")
-                withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, file) }
-                    .onSuccess { bitmap = BitmapFactory.decodeFile(it.path)?.asImageBitmap() }
-                    .onFailure { error = it.message }
-            }
-            PreviewKind.Video, PreviewKind.Audio -> {
-                val file = File(context.cacheDir, "preview-${item.name.hashCode()}")
-                withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, file) }
-                    .onSuccess { mediaFile = it }
-                    .onFailure { error = it.message }
-            }
-            PreviewKind.Unsupported -> Unit
-        }
-    }
-    Column(Modifier.fillMaxSize().background(Color(0xFF030712))) {
-        Surface(color = Color(0xFF030712)) { AppBar(item.name, onBack) }
-        Box(Modifier.weight(1f).fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-            when (kind) {
-                PreviewKind.Image -> bitmap?.let { Image(it, item.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) } ?: CircularProgressIndicator()
-                PreviewKind.Text -> Text(text ?: "Đang tải…", color = Color.White, modifier = Modifier.fillMaxSize())
-                PreviewKind.Video, PreviewKind.Audio -> mediaFile?.let { file ->
-                    AndroidView(
-                        factory = { ctx ->
-                            VideoView(ctx).apply {
-                                val controller = MediaController(ctx)
-                                controller.setAnchorView(this)
-                                setMediaController(controller)
-                                setVideoURI(Uri.fromFile(file))
-                                setOnPreparedListener { start() }
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } ?: CircularProgressIndicator()
-                PreviewKind.Unsupported -> Text(stringResource(R.string.preview_unsupported), color = Color.White)
-            }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        }
-        Text("${formatBytes(item.size)}  •  ${PreviewRouter.mimeType(item.name)}", color = Color.White, modifier = Modifier.padding(16.dp))
     }
 }
 

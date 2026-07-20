@@ -31,6 +31,7 @@
     <string name="http_warning">HTTP is unencrypted. Continue only on a trusted network.</string>
     <string name="connection_failed">Connection failed: %1$s</string>
     <string name="preview_unsupported">This format cannot be previewed.</string>
+    <string name="preview_open_anyway">Open anyway</string>
     <string name="language">Language</string>
     <string name="language_vietnamese">Vietnamese</string>
     <string name="language_english">English</string>
