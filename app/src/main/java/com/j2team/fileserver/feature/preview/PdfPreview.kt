@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -31,6 +30,7 @@ import java.io.Closeable
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 
 private class PdfDocument(private val file: File) : Closeable {
     private var descriptor: ParcelFileDescriptor? = null
@@ -62,7 +62,12 @@ private class PdfDocument(private val file: File) : Closeable {
             renderer.orThrow().openPage(index).use { page ->
                 val height = (page.height.toFloat() / page.width * width).toInt().coerceAtLeast(1)
                 Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
+                    try {
                     page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    } catch (error: Throwable) {
+                        bitmap.recycle()
+                        throw error
+                    }
                 }
             }
         }
@@ -92,7 +97,7 @@ internal fun PdfPreview(file: File, modifier: Modifier = Modifier) {
     LaunchedEffect(document) {
         runCatching { document.open() }
             .onSuccess(document::markReady)
-            .onFailure { error = it.message ?: "Unable to render PDF" }
+            .onFailure { if (it is CancellationException) throw it; error = it.message ?: "Unable to render PDF" }
     }
 
     when {
@@ -103,7 +108,7 @@ internal fun PdfPreview(file: File, modifier: Modifier = Modifier) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            items((0 until document.pageCount).toList(), key = { it }) { index ->
+            items(count = document.pageCount, key = { it }) { index ->
                 PdfPage(document, index)
             }
         }
@@ -119,7 +124,7 @@ private fun PdfPage(document: PdfDocument, index: Int) {
         LaunchedEffect(document, index, width) {
             runCatching { document.pageBitmap(index, width) }
                 .onSuccess { bitmap = it }
-                .onFailure { error = it.message ?: "Unable to render page ${index + 1}" }
+                .onFailure { if (it is CancellationException) throw it; error = it.message ?: "Unable to render page ${index + 1}" }
         }
         bitmap?.let {
             DisposableEffect(it) {

@@ -5,6 +5,7 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.network.FileBrowserClient
+import com.j2team.fileserver.core.network.PreviewProbe
 import java.io.File
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
@@ -87,6 +88,9 @@ class SessionRepository(
     ): Result<Unit> = authenticated(profile) { token ->
         transport.downloadToResult(profile, token, remotePath, openDestination, onProgress)
     }
+
+    suspend fun previewProbe(profile: ServerProfile, remotePath: String): Result<PreviewProbe> =
+        authenticated(profile) { token -> transport.previewProbeResult(profile, token, remotePath) }
 
     suspend fun readText(profile: ServerProfile, remotePath: String): Result<String> =
         authenticated(profile) { token -> transport.readTextResult(profile, token, remotePath) }

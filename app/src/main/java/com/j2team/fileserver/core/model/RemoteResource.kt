@@ -5,6 +5,7 @@ data class RemoteResource(
     val path: String,
     val isDirectory: Boolean,
     val size: Long,
+    val mimeType: String? = null,
     val permissions: ResourcePermissions = ResourcePermissions(),
 )
 

@@ -51,6 +51,14 @@ class PreviewRouterTest {
     }
 
     @Test
+    fun combinesBoundedSampleAndDeclaredMimeForActualPreviewRouting() {
+        assertEquals(PreviewKind.Text, PreviewRouter.kind("server-output", "ready\n".toByteArray(), "text/plain"))
+        assertEquals(PreviewKind.Unsupported, PreviewRouter.kind("server-output", byteArrayOf(0, 1), "application/octet-stream"))
+        assertEquals(PreviewKind.Unsupported, PreviewRouter.kind("README", byteArrayOf(0, 1), "application/octet-stream"))
+        assertEquals(PreviewKind.Video, PreviewRouter.kind("stream.ts", "binary".toByteArray(), "video/mp2t"))
+    }
+
+    @Test
     fun suppliesConsistentMimeTypes() {
         assertEquals("application/pdf", PreviewRouter.mimeType("manual.PDF"))
         assertEquals("text/markdown", PreviewRouter.mimeType("notes.md"))

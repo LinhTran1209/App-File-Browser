@@ -15,6 +15,12 @@
 - GREEN: `./gradlew.bat testDebugUnitTest --tests "*PreviewRouterTest" --tests "*TextPagerTest"` passed.
 - Final: `./gradlew.bat testDebugUnitTest lintDebug assembleDebug` passed.
 
+## Review follow-up
+
+- `PreviewScreen` now obtains an authenticated 64 KiB range probe before routing. It combines the probe's UTF-8 sample with the server `Content-Type` (and optional listed MIME metadata), so extensionless binaries remain unsupported while text is previewed and MPEG-TS wins over the ambiguous `.ts` suffix.
+- The streaming download loop checks coroutine cancellation between chunks, closes its streams, disconnects the HTTP connection, and rethrows cancellation rather than showing a pipe-close error.
+- PDF and image bitmap allocation now has explicit unpublished-bitmap cleanup; cancellation is never converted into a preview error. PDF page generation uses the count-based lazy API.
+
 ## Known constraint
 
 The `.ts` suffix is ambiguous between TypeScript and MPEG transport streams. Extension-only routing defaults to TypeScript; `PreviewRouter.kind(name, declaredMimeType)` lets a server-declared `video/mp2t` select video instead.

@@ -51,7 +51,7 @@ internal fun PreviewScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    val kind = PreviewRouter.kind(item.name)
+    var kind by remember(item.path) { mutableStateOf<PreviewKind?>(null) }
     val temporaryFile = remember(item.path) { File(context.cacheDir, "preview-${UUID.randomUUID()}.tmp") }
     var downloadedFile by remember(item.path) { mutableStateOf<File?>(null) }
     var error by remember(item.path) { mutableStateOf<String?>(null) }
@@ -60,8 +60,13 @@ internal fun PreviewScreen(
     DisposableEffect(temporaryFile) {
         onDispose { temporaryFile.delete() }
     }
+    LaunchedEffect(profile.id, item.path) {
+        withContext(Dispatchers.IO) { sessionRepository.previewProbe(profile, item.path) }
+            .onSuccess { probe -> kind = PreviewRouter.kind(item.name, probe.sample, probe.mimeType ?: item.mimeType) }
+            .onFailure { error = it.message ?: "Unable to inspect preview" }
+    }
     LaunchedEffect(profile.id, item.path, kind, temporaryFile) {
-        if (kind == PreviewKind.Unsupported || kind == PreviewKind.Text) return@LaunchedEffect
+        if (kind == null || kind == PreviewKind.Unsupported || kind == PreviewKind.Text) return@LaunchedEffect
         withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, temporaryFile) }
             .onSuccess { downloadedFile = it }
             .onFailure {
@@ -78,6 +83,7 @@ internal fun PreviewScreen(
         ) {
             when {
                 error != null -> Text(error!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+                kind == null -> CircularProgressIndicator()
                 kind == PreviewKind.Unsupported -> Text(stringResource(R.string.preview_unsupported), color = Color.White)
                 kind == PreviewKind.Text && item.size > INLINE_TEXT_LIMIT_BYTES && !openLargeText -> Button(onClick = { openLargeText = true }) { Text(stringResource(R.string.preview_open_anyway)) }
                 kind == PreviewKind.Text -> TextPreview(
@@ -93,7 +99,7 @@ internal fun PreviewScreen(
             }
         }
         Text(
-            "${formatBytes(item.size)}  •  ${PreviewRouter.mimeType(item.name)}",
+            "${formatBytes(item.size)}  •  ${item.mimeType ?: PreviewRouter.mimeType(item.name)}",
             color = Color.White,
             modifier = Modifier.padding(16.dp),
         )

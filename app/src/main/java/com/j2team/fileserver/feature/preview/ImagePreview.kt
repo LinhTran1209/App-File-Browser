@@ -20,9 +20,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import java.io.File
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 
 internal fun decodeSampledImage(file: File, requestedWidth: Int, requestedHeight: Int): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -51,9 +51,17 @@ internal fun ImagePreview(file: File, description: String, modifier: Modifier = 
         var bitmap by remember(file, targetWidth, targetHeight) { mutableStateOf<Bitmap?>(null) }
 
         LaunchedEffect(file, targetWidth, targetHeight) {
-            val decoded = withContext(Dispatchers.IO) { decodeSampledImage(file, targetWidth, targetHeight) }
-            if (currentCoroutineContext().isActive) bitmap = decoded
-            else decoded?.recycle()
+            val decoded = withContext(Dispatchers.IO) {
+                val candidate = decodeSampledImage(file, targetWidth, targetHeight)
+                try {
+                    coroutineContext.ensureActive()
+                    candidate
+                } catch (error: Throwable) {
+                    candidate?.recycle()
+                    throw error
+                }
+            }
+            bitmap = decoded
         }
         bitmap?.let { decoded ->
             DisposableEffect(decoded) {

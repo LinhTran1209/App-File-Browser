@@ -16,6 +16,11 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
+import java.util.concurrent.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
+
+data class PreviewProbe(val mimeType: String?, val sample: ByteArray)
 
 class FileBrowserClient {
     /** Downloads a remote resource to [destination] without buffering it in memory. */
@@ -68,15 +73,17 @@ class FileBrowserClient {
     }
 
     /** Streams a download to a caller-owned output stream, allowing SAF destinations without a temporary disk file. */
-    fun downloadToResult(
+    suspend fun downloadToResult(
         profile: ServerProfile,
         token: String? = null,
         remotePath: String,
         openDestination: () -> OutputStream,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
-    ): ApiResult<Unit> = try {
+    ): ApiResult<Unit> {
+        var connection: HttpURLConnection? = null
+        return try {
         require(remotePath.isNotBlank()) { "Remote path is required" }
-        val connection = open(rawUrl(profile, remotePath), "GET")
+        connection = open(rawUrl(profile, remotePath), "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
         val code = connection.responseCode
         if (code !in 200..299) return ApiResult(code, error = IOException("Download failed ($code)"))
@@ -86,6 +93,7 @@ class FileBrowserClient {
             openDestination().use { output ->
                 val buffer = ByteArray(8 * 1024)
                 while (true) {
+                    coroutineContext.ensureActive()
                     val count = input.read(buffer)
                     if (count < 0) break
                     output.write(buffer, 0, count)
@@ -95,6 +103,38 @@ class FileBrowserClient {
             }
         }
         ApiResult(code, Unit)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    } finally {
+        connection?.disconnect()
+    }
+    }
+
+    /** Reads only a bounded, authenticated prefix and preserves the server Content-Type for preview routing. */
+    fun previewProbeResult(profile: ServerProfile, token: String? = null, remotePath: String, maxBytes: Int = 64 * 1024): ApiResult<PreviewProbe> = try {
+        require(maxBytes > 0) { "maxBytes must be positive" }
+        val connection = open(rawUrl(profile, remotePath), "GET")
+        try {
+            if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+            connection.setRequestProperty("Range", "bytes=0-${maxBytes - 1}")
+            val code = connection.responseCode
+            if (code !in 200..299) return ApiResult(code, error = IOException("Preview probe failed ($code)"))
+            val sample = connection.inputStream.use { input ->
+                val output = ByteArrayOutputStream(maxBytes)
+                val buffer = ByteArray(minOf(8 * 1024, maxBytes))
+                while (output.size() < maxBytes) {
+                    val count = input.read(buffer, 0, minOf(buffer.size, maxBytes - output.size()))
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
+            ApiResult(code, PreviewProbe(connection.contentType?.substringBefore(';')?.trim()?.takeIf(String::isNotEmpty), sample))
+        } finally {
+            connection.disconnect()
+        }
     } catch (error: Throwable) {
         ApiResult(-1, error = error)
     }
@@ -206,6 +246,7 @@ class FileBrowserClient {
                     path = item.optString("path", path),
                     isDirectory = item.optBoolean("isDir"),
                     size = item.optLong("size"),
+                    mimeType = item.optString("mimeType").ifBlank { item.optString("mime") }.takeIf { it.isNotBlank() },
                     permissions = permissionsOf(item, responsePermissions),
                 ))
             }

@@ -30,6 +30,7 @@ object PreviewRouter {
 
     /** Uses a UTF-8 sample only for extensionless files; known extensions always win. */
     fun kind(name: String, sample: ByteArray): PreviewKind {
+        if (extension(name).isEmpty()) return if (sample.isLikelyUtf8Text()) PreviewKind.Text else PreviewKind.Unsupported
         val named = kind(name)
         if (named != PreviewKind.Unsupported || extension(name).isNotEmpty()) return named
         return if (sample.isLikelyUtf8Text()) PreviewKind.Text else PreviewKind.Unsupported
@@ -40,6 +41,12 @@ object PreviewRouter {
         "video/mp2t" -> PreviewKind.Video
         "text/typescript", "application/typescript" -> PreviewKind.Text
         else -> kind(name)
+    }
+
+    fun kind(name: String, sample: ByteArray, declaredMimeType: String?): PreviewKind {
+        if (declaredMimeType?.lowercase() == "video/mp2t") return PreviewKind.Video
+        if (extension(name).isEmpty()) return kind(name, sample)
+        return kind(name, declaredMimeType)
     }
 
     fun mimeType(name: String): String = when (extension(name)) {

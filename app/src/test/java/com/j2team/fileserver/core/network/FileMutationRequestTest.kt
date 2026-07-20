@@ -11,6 +11,20 @@ import com.sun.net.httpserver.HttpServer
 
 class FileMutationRequestTest {
     @Test
+    fun previewProbeUsesAuthenticatedBoundedRangeAndPreservesContentType() = runTest {
+        withServer { request ->
+            assertEquals("GET", request.method)
+            assertEquals("token", request.authHeader)
+            assertEquals("bytes=0-65535", request.rangeHeader)
+            206 to "preview text"
+        }.let { server -> try {
+            val probe = FileBrowserClient().previewProbeResult(profile(server), "token", "/notes").toResult().getOrThrow()
+
+            assertEquals("text/plain", probe.mimeType)
+            assertEquals("preview text", probe.sample.toString(Charsets.UTF_8))
+        } finally { server.stop(0) } }
+    }
+    @Test
     fun currentUserPermissionsUseOfficialPermShapeAndSelfEndpoint() = runTest {
         withServer { request ->
             assertEquals("GET", request.method)
@@ -115,14 +129,15 @@ class FileMutationRequestTest {
     private fun withServer(handle: (Request) -> Pair<Int, String>): HttpServer =
         HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
             createContext("/") { exchange ->
-                val response = handle(Request(exchange.requestMethod, exchange.requestURI.rawPath, exchange.requestHeaders["X-Auth"]?.firstOrNull()))
+                exchange.responseHeaders.add("Content-Type", "text/plain; charset=utf-8")
+                val response = handle(Request(exchange.requestMethod, exchange.requestURI.rawPath, exchange.requestHeaders["X-Auth"]?.firstOrNull(), exchange.requestHeaders["Range"]?.firstOrNull()))
                 exchange.sendResponseHeaders(response.first, response.second.toByteArray().size.toLong())
                 exchange.responseBody.use { it.write(response.second.toByteArray()) }
             }
             start()
         }
 
-    private data class Request(val method: String, val path: String, val authHeader: String?)
+    private data class Request(val method: String, val path: String, val authHeader: String?, val rangeHeader: String?)
 
     private fun tokenForUser(id: Int): String = "header." + java.util.Base64.getUrlEncoder().withoutPadding()
         .encodeToString("{\"user\":{\"id\":$id}}".toByteArray()) + ".signature"
