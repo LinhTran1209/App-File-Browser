@@ -1,10 +1,13 @@
 package com.j2team.fileserver
 
 import android.graphics.BitmapFactory
+import android.app.LocaleManager
 import android.content.Context
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
+import android.os.LocaleList
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.activity.ComponentActivity
@@ -30,6 +33,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -41,12 +45,16 @@ import com.j2team.fileserver.core.session.EncryptedSecretStore
 import com.j2team.fileserver.core.session.LoginRequiredException
 import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.FileServerTheme
+import com.j2team.fileserver.core.ui.AppIcons
 import com.j2team.fileserver.feature.browser.BrowserPath
 import com.j2team.fileserver.feature.preview.PreviewKind
 import com.j2team.fileserver.feature.preview.PreviewRouter
 import com.j2team.fileserver.feature.servers.ServerStore
 import com.j2team.fileserver.feature.settings.AppSettings
 import com.j2team.fileserver.feature.settings.AppTheme
+import com.j2team.fileserver.feature.settings.AppLanguage
+import com.j2team.fileserver.feature.settings.FolderIconSet
+import com.j2team.fileserver.feature.settings.SettingsScreen
 import com.j2team.fileserver.feature.settings.SettingsStore
 import com.j2team.fileserver.feature.transfers.*
 import kotlinx.coroutines.Dispatchers
@@ -57,22 +65,33 @@ import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun attachBaseContext(newBase: Context) {
-        val config = Configuration(newBase.resources.configuration).apply {
-            setLocale(Locale.forLanguageTag("vi"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            super.attachBaseContext(newBase)
+            return
         }
+        val language = SettingsStore(newBase).read().language
+        val config = Configuration(newBase.resources.configuration).apply { setLocale(Locale.forLanguageTag(language.languageTag)) }
         super.attachBaseContext(newBase.createConfigurationContext(config))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) applyLanguage(SettingsStore(this).read().language)
         setContent {
             FileServerApp(
                 serverStore = ServerStore(this),
                 settingsStore = SettingsStore(this),
                 transferStore = TransferStore(this),
                 sessionRepository = SessionRepository(EncryptedSecretStore(applicationContext), FileBrowserClient()),
+                onLanguageChanged = ::applyLanguage,
             )
         }
+    }
+
+    private fun applyLanguage(language: AppLanguage) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getSystemService(LocaleManager::class.java).applicationLocales = LocaleList.forLanguageTags(language.languageTag)
+        } else recreate()
     }
 }
 
@@ -84,6 +103,7 @@ private fun FileServerApp(
     settingsStore: SettingsStore,
     transferStore: TransferStore,
     sessionRepository: SessionRepository,
+    onLanguageChanged: (AppLanguage) -> Unit,
 ) {
     var settings by remember { mutableStateOf(settingsStore.read()) }
     val dark = when (settings.theme) {
@@ -157,9 +177,11 @@ private fun FileServerApp(
                     settings = settings,
                     onBack = { screen = Screen.Servers },
                     onTransfers = { screen = Screen.Transfers },
-                    onChanged = {
-                        settings = it
-                        settingsStore.save(it)
+                    onChanged = { updated ->
+                        val languageChanged = settings.language != updated.language
+                        settings = updated
+                        settingsStore.save(updated)
+                        if (languageChanged) onLanguageChanged(updated.language)
                     },
                 )
             }
@@ -197,7 +219,7 @@ private fun ServersScreen(
     Column(Modifier.fillMaxSize()) {
         AppBar(stringResource(R.string.app_name), action = {
             IconButton(onClick = onSettings, modifier = Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.settings_icon), contentDescription = stringResource(R.string.settings), tint = Color.Unspecified)
+                Icon(painterResource(AppIcons.Settings), contentDescription = stringResource(R.string.settings))
             }
         })
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
@@ -296,6 +318,7 @@ private fun LoginScreen(
 ) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -308,7 +331,11 @@ private fun LoginScreen(
             Text(profile?.endpoint.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(username, { username = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp))
-            OutlinedTextField(password, { password = it }, label = { Text(stringResource(R.string.password)) }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp))
+            OutlinedTextField(
+                password, { password = it }, label = { Text(stringResource(R.string.password)) }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp),
+                trailingIcon = { IconButton(onClick = { passwordVisible = !passwordVisible }) { Icon(painterResource(if (passwordVisible) AppIcons.VisibilityOff else AppIcons.Visibility), contentDescription = stringResource(if (passwordVisible) R.string.hide_password else R.string.show_password)) } },
+            )
             if (profile?.scheme == "http") Text(stringResource(R.string.http_warning), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(
@@ -390,12 +417,12 @@ private fun BrowserScreen(
 
     Column(Modifier.fillMaxSize()) {
         AppBar(profile?.displayName ?: stringResource(R.string.app_name), onBack, action = {
-            TextButton(onClick = onTransfers) { Text("⇅") }
+            IconButton(onClick = onTransfers, modifier = Modifier.size(48.dp)) { Icon(painterResource(AppIcons.Transfers), stringResource(R.string.transfers)) }
         })
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (BrowserPath.normalize(path) != "/") TextButton(onClick = { path = BrowserPath.parent(path) }) { Text("‹") }
             Text(path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton(onClick = { uploadPicker.launch(arrayOf("*/*")) }) { Text("+ ${stringResource(R.string.upload)}") }
+            IconButton(onClick = { uploadPicker.launch(arrayOf("*/*")) }, modifier = Modifier.size(48.dp)) { Icon(painterResource(AppIcons.Upload), stringResource(R.string.upload)) }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(stringResource(R.string.list), fontWeight = FontWeight.Medium)
@@ -407,6 +434,7 @@ private fun BrowserScreen(
             items(resources, key = { it.path }) { item ->
                 FileRow(
                     item = item,
+                    settings = settings,
                     onOpen = { if (item.isDirectory) path = item.path else preview = item },
                     onDownload = {
                         if (profile != null) {
@@ -428,21 +456,21 @@ private fun BrowserScreen(
 }
 
 @Composable
-private fun FileRow(item: RemoteResource, onOpen: () -> Unit, onDownload: () -> Unit) {
+private fun FileRow(item: RemoteResource, settings: AppSettings, onOpen: () -> Unit, onDownload: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().height(72.dp).clickable(onClick = onOpen),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Row(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(40.dp))
+            Icon(painterResource(folderIconResource(settings.folderIconSet)), contentDescription = null, modifier = Modifier.size(40.dp), tint = Color.Unspecified)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (item.isDirectory) stringResource(R.string.folder) else formatBytes(item.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (item.isDirectory) Text("›", style = MaterialTheme.typography.titleLarge)
-            else TextButton(onClick = onDownload, contentPadding = PaddingValues(8.dp)) { Text("↓") }
+            else IconButton(onClick = onDownload, modifier = Modifier.size(48.dp)) { Icon(painterResource(AppIcons.Download), stringResource(R.string.download)) }
         }
     }
 }
@@ -529,7 +557,7 @@ private fun TransfersScreen(store: TransferStore, onBack: () -> Unit) {
 }
 
 @Composable
-private fun SettingsScreen(
+private fun LegacySettingsScreen(
     settings: AppSettings,
     onBack: () -> Unit,
     onTransfers: () -> Unit,
@@ -573,4 +601,10 @@ private fun formatBytes(bytes: Long): String = when {
     bytes < 1_048_576 -> "%.1f KB".format(bytes / 1_024.0)
     bytes < 1_073_741_824 -> "%.1f MB".format(bytes / 1_048_576.0)
     else -> "%.1f GB".format(bytes / 1_073_741_824.0)
+}
+
+private fun folderIconResource(set: FolderIconSet): Int = when (set) {
+    FolderIconSet.Classic -> AppIcons.FolderClassic
+    FolderIconSet.Color -> AppIcons.FolderColor
+    FolderIconSet.Outline -> AppIcons.FolderOutline
 }

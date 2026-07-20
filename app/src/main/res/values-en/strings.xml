@@ -31,4 +31,17 @@
     <string name="http_warning">HTTP is unencrypted. Continue only on a trusted network.</string>
     <string name="connection_failed">Connection failed: %1$s</string>
     <string name="preview_unsupported">This format cannot be previewed.</string>
+    <string name="language">Language</string>
+    <string name="language_vietnamese">Vietnamese</string>
+    <string name="language_english">English</string>
+    <string name="download_directory">Download directory</string>
+    <string name="choose_download_directory">Choose download directory</string>
+    <string name="folder_icons">Folder icons</string>
+    <string name="folder_icon_classic">Classic</string>
+    <string name="folder_icon_color">Color</string>
+    <string name="folder_icon_outline">Outline</string>
+    <string name="view_mode">View mode</string>
+    <string name="grid">Grid</string>
+    <string name="show_password">Show password</string>
+    <string name="hide_password">Hide password</string>
 </resources>

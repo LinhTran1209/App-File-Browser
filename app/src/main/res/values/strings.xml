@@ -31,4 +31,17 @@
     <string name="http_warning">HTTP không mã hóa dữ liệu. Chỉ tiếp tục trong mạng tin cậy.</string>
     <string name="connection_failed">Không thể kết nối: %1$s</string>
     <string name="preview_unsupported">Không hỗ trợ xem trước định dạng này.</string>
+    <string name="language">Ngôn ngữ</string>
+    <string name="language_vietnamese">Tiếng Việt</string>
+    <string name="language_english">English</string>
+    <string name="download_directory">Thư mục tải xuống</string>
+    <string name="choose_download_directory">Chọn thư mục tải xuống</string>
+    <string name="folder_icons">Biểu tượng thư mục</string>
+    <string name="folder_icon_classic">Cổ điển</string>
+    <string name="folder_icon_color">Màu sắc</string>
+    <string name="folder_icon_outline">Viền</string>
+    <string name="view_mode">Chế độ xem</string>
+    <string name="grid">Lưới</string>
+    <string name="show_password">Hiện mật khẩu</string>
+    <string name="hide_password">Ẩn mật khẩu</string>
 </resources>
