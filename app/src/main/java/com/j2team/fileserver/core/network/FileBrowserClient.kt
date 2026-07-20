@@ -4,10 +4,96 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileInputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
 class FileBrowserClient {
+    /** Downloads a remote resource to [destination] without buffering it in memory. */
+    fun download(
+        profile: ServerProfile,
+        token: String? = null,
+        remotePath: String,
+        destination: File,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
+    ): Result<File> = runCatching {
+        require(remotePath.isNotBlank()) { "Remote path is required" }
+        val connection = open(apiUrl(profile, "/api/raw", remotePath), "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        require(connection.responseCode in 200..299) { "Download failed (${connection.responseCode})" }
+
+        destination.parentFile?.mkdirs()
+        val temporary = File(destination.parentFile ?: File("."), ".${destination.name}.part")
+        val total = connection.contentLengthLong
+        var copied = 0L
+        try {
+            connection.inputStream.use { input ->
+                temporary.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        copied += count
+                        onProgress?.invoke(copied, total)
+                    }
+                }
+            }
+            if (destination.exists() && !destination.delete()) throw IOException("Unable to replace destination")
+            if (!temporary.renameTo(destination)) throw IOException("Unable to finalize download")
+            destination
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    /** Uploads one local file as multipart/form-data to a remote directory. */
+    fun upload(
+        profile: ServerProfile,
+        token: String? = null,
+        parentPath: String = "/",
+        file: File,
+        onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null
+    ): Result<String> = runCatching {
+        require(file.isFile) { "Upload file does not exist: ${file.name}" }
+        val boundary = "----FileServer${System.currentTimeMillis()}"
+        val connection = open(apiUrl(profile, "/api/resources", parentPath), "POST").apply {
+            doOutput = true
+            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+        }
+        val prefix = "--$boundary\r\n" +
+            "Content-Disposition: form-data; name=\"file\"; filename=\"${file.name.replace("\"", "")}\"\r\n" +
+            "Content-Type: application/octet-stream\r\n\r\n"
+        val suffix = "\r\n--$boundary--\r\n"
+        val total = prefix.toByteArray().size + file.length() + suffix.toByteArray().size
+        var sent = 0L
+        connection.outputStream.use { output ->
+            val head = prefix.toByteArray()
+            output.write(head); sent += head.size; onProgress?.invoke(sent, total)
+            FileInputStream(file).use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    sent += count
+                    onProgress?.invoke(sent, total)
+                }
+            }
+            val tail = suffix.toByteArray()
+            output.write(tail); sent += tail.size; onProgress?.invoke(sent, total)
+        }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        require(code in 200..299) { "Upload failed ($code)" }
+        body
+    }
+
     fun login(profile: ServerProfile, username: String, password: String): Result<String> = runCatching {
         val connection = open(profile.endpoint + "api/login", "POST")
         connection.setRequestProperty("Content-Type", "application/json")
@@ -37,5 +123,14 @@ class FileBrowserClient {
         connectTimeout = 8_000
         readTimeout = 15_000
         useCaches = false
+    }
+
+    private fun apiUrl(profile: ServerProfile, apiPath: String, path: String): String {
+        val cleanPath = path.trim().let { if (it.isEmpty() || it == "/") "/" else if (it.startsWith("/")) it else "/$it" }
+        return profile.endpoint.trimEnd('/') + apiPath + encodePath(cleanPath)
+    }
+
+    private fun encodePath(path: String): String = path.split('/').joinToString("/") { segment ->
+        java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
     }
 }
