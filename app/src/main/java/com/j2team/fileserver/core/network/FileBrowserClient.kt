@@ -22,7 +22,8 @@ class FileBrowserClient {
         val connection = open(url, "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
         require(connection.responseCode in 200..299) { "Unable to list files (${connection.responseCode})" }
-        val array = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+        val body = connection.inputStream.bufferedReader().use { it.readText() }
+        val array = if (body.trimStart().startsWith("[")) JSONArray(body) else JSONObject(body).optJSONArray("items") ?: JSONArray()
         buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)

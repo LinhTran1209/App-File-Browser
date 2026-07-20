@@ -5,6 +5,7 @@
         android:name=".FileServerApp"
         android:allowBackup="false"
         android:label="File Server"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.FileServer">
         <activity

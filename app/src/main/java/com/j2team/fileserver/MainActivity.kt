@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +37,7 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.network.FileBrowserClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import com.j2team.fileserver.core.ui.FileServerTheme
 
 class MainActivity : ComponentActivity() {
@@ -52,6 +54,7 @@ private fun FileServerAppShell(store: ServerStore) {
     var profiles by remember { mutableStateOf(store.all()) }
     var screen by remember { mutableStateOf(AppScreen.Servers) }
     var selected by remember { mutableStateOf<ServerProfile?>(null) }
+    var token by remember { mutableStateOf<String?>(null) }
     FileServerTheme {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
@@ -77,8 +80,8 @@ private fun FileServerAppShell(store: ServerStore) {
                     AppScreen.Add -> AddServerScreen(onCancel = { screen = AppScreen.Servers }, onSave = { raw, name ->
                         Endpoint.normalize(raw).onSuccess { endpoint -> store.create(name, endpoint.scheme, endpoint.host, endpoint.port, endpoint.basePath); profiles = store.all(); screen = AppScreen.Servers }
                     })
-                    AppScreen.Login -> LoginScreen(selected?.displayName ?: "Server", onConnected = { screen = AppScreen.Browser })
-                    AppScreen.Browser -> BrowserScreen(selected, onBack = { screen = AppScreen.Servers })
+                    AppScreen.Login -> LoginScreen(selected, onConnected = { token = it; screen = AppScreen.Browser })
+                    AppScreen.Browser -> BrowserScreen(selected, token, onBack = { screen = AppScreen.Servers })
                     AppScreen.Transfers -> EmptyFeatureScreen("Transfers", "Uploads and downloads will appear here")
                     AppScreen.Settings -> EmptyFeatureScreen("Settings", "Theme, security and connection preferences")
                 }
@@ -126,25 +129,38 @@ private fun AddServerScreen(onCancel: () -> Unit, onSave: (String, String) -> Un
 }
 
 @Composable
-private fun LoginScreen(serverName: String, onConnected: () -> Unit) {
+private fun LoginScreen(profile: ServerProfile?, onConnected: (String?) -> Unit) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Connect to $serverName", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
+        Text("Connect to ${profile?.displayName ?: "Server"}", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
+        if (profile?.scheme == "http") Text("HTTP is unencrypted. Continue only on your trusted home network.", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
         Text("Credentials are used only for this connection and are never logged.")
         OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedTextField(password, { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        Button(onClick = onConnected, modifier = Modifier.fillMaxWidth()) { Text("Sign in") }
+        error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
+        Button(onClick = {
+            if (profile == null) return@Button
+            busy = true; error = null
+            scope.launch {
+                val result = withContext(Dispatchers.IO) { FileBrowserClient().login(profile, username, password) }
+                busy = false
+                result.onSuccess { onConnected(it) }.onFailure { error = it.message ?: "Sign in failed" }
+            }
+        }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Connecting…" else "Sign in") }
     }
 }
 
 @Composable
-private fun BrowserScreen(profile: ServerProfile?, onBack: () -> Unit) {
+private fun BrowserScreen(profile: ServerProfile?, token: String?, onBack: () -> Unit) {
     var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(profile) {
         if (profile != null) {
-            val result = withContext(Dispatchers.IO) { FileBrowserClient().list(profile) }
+            val result = withContext(Dispatchers.IO) { FileBrowserClient().list(profile, token) }
             result.onSuccess { resources = it }.onFailure { error = it.message }
         }
     }
