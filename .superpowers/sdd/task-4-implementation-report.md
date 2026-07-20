@@ -2,7 +2,7 @@
 
 Status: implemented and verified.
 
-Commit: pending (recorded after commit).
+Implementation commit: `3e12c54` (`feat: deliver reliable transfer center`).
 
 Delivered:
 
