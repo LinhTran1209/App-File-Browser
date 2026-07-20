@@ -2,6 +2,7 @@ package com.j2team.fileserver.core.session
 
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.model.RemoteResource
+import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.network.FileBrowserClient
 import java.io.File
 
@@ -50,6 +51,9 @@ class SessionRepository(
     suspend fun list(profile: ServerProfile, path: String): Result<List<RemoteResource>> =
         authenticated(profile) { token -> transport.listResult(profile, token, path) }
 
+    suspend fun listWithPermissions(profile: ServerProfile, path: String): Result<ResourceListing> =
+        authenticated(profile) { token -> transport.listWithPermissionsResult(profile, token, path) }
+
     suspend fun download(
         profile: ServerProfile,
         remotePath: String,
@@ -62,6 +66,20 @@ class SessionRepository(
     suspend fun readText(profile: ServerProfile, remotePath: String): Result<String> =
         authenticated(profile) { token -> transport.readTextResult(profile, token, remotePath) }
 
+    /** Authenticate with a safe list request before sending a non-idempotent mutation once. */
+    suspend fun createDirectory(profile: ServerProfile, path: String): Result<Unit> =
+        mutationToken(profile).fold(
+            onSuccess = { token -> transport.createDirectory(profile, token, path) },
+            onFailure = { error -> Result.failure(error) },
+        )
+
+    /** Deletes are deliberately never replayed after the first server request. */
+    suspend fun delete(profile: ServerProfile, paths: List<String>): Result<Unit> =
+        mutationToken(profile).fold(
+            onSuccess = { token -> transport.delete(profile, token, paths) },
+            onFailure = { error -> Result.failure(error) },
+        )
+
     /**
      * Refreshes authentication with a safe read first, then sends the upload exactly once.
      * The upload itself is never replayed because its acceptance cannot be determined safely.
@@ -72,11 +90,14 @@ class SessionRepository(
         file: File,
         onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null,
     ): Result<String> {
-        val token = authenticated(profile) { candidate ->
-            transport.listResult(profile, candidate, profile.basePath).map { candidate }
-        }.getOrElse { return Result.failure(it) }
+        val token = mutationToken(profile).getOrElse { return Result.failure(it) }
         return transport.upload(profile, token, parentPath, file, onProgress)
     }
+
+    private suspend fun mutationToken(profile: ServerProfile): Result<String> =
+        authenticated(profile) { candidate ->
+            transport.listResult(profile, candidate, profile.basePath).map { candidate }
+        }
 
     fun clear(profileId: String) {
         tokenStore.remove(profileId)

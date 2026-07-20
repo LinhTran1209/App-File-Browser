@@ -49,6 +49,7 @@ import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.FileServerTheme
 import com.j2team.fileserver.core.ui.AppIcons
 import com.j2team.fileserver.feature.browser.BrowserPath
+import com.j2team.fileserver.feature.browser.BrowserScreen
 import com.j2team.fileserver.feature.preview.PreviewKind
 import com.j2team.fileserver.feature.preview.PreviewRouter
 import com.j2team.fileserver.feature.servers.ServerStore
@@ -193,7 +194,7 @@ private fun FileServerApp(
 }
 
 @Composable
-private fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Composable () -> Unit)? = null) {
+internal fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Composable () -> Unit)? = null) {
     Surface(color = MaterialTheme.colorScheme.surface) {
         Row(
             Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
@@ -362,7 +363,7 @@ private fun LoginScreen(
 }
 
 @Composable
-private fun BrowserScreen(
+private fun LegacyBrowserScreen(
     profile: ServerProfile?,
     settings: AppSettings,
     transferStore: TransferStore,
@@ -499,7 +500,7 @@ private fun FileRow(item: RemoteResource, settings: AppSettings, onOpen: () -> U
 }
 
 @Composable
-private fun PreviewScreen(
+internal fun PreviewScreen(
     profile: ServerProfile,
     item: RemoteResource,
     transferStore: TransferStore,
@@ -619,20 +620,20 @@ private fun LegacySettingsScreen(
     }
 }
 
-private fun formatBytes(bytes: Long): String = when {
+internal fun formatBytes(bytes: Long): String = when {
     bytes < 1_024 -> "$bytes B"
     bytes < 1_048_576 -> "%.1f KB".format(bytes / 1_024.0)
     bytes < 1_073_741_824 -> "%.1f MB".format(bytes / 1_048_576.0)
     else -> "%.1f GB".format(bytes / 1_073_741_824.0)
 }
 
-private fun folderIconResource(set: FolderIconSet): Int = when (set) {
+internal fun folderIconResource(set: FolderIconSet): Int = when (set) {
     FolderIconSet.Classic -> AppIcons.FolderClassic
     FolderIconSet.Color -> AppIcons.FolderColor
     FolderIconSet.Outline -> AppIcons.FolderOutline
 }
 
-private fun copyToDownloadTree(resolver: ContentResolver, treeUri: String, source: File, name: String) {
+internal fun copyToDownloadTree(resolver: ContentResolver, treeUri: String, source: File, name: String) {
     val tree = Uri.parse(treeUri)
     val treeDocument = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
     var destination: Uri? = null

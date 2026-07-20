@@ -47,4 +47,14 @@
     <string name="app_version">Ứng dụng Android • v%1$s</string>
     <string name="download_directory_permission_error">Không thể dùng thư mục đã chọn. Hãy cấp lại quyền thư mục.</string>
     <string name="download_directory_unavailable">Không thể lưu vào thư mục tải xuống đã chọn. Hãy chọn lại thư mục trong Cài đặt.</string>
+    <string name="new_folder">New folder</string>
+    <string name="upload_files">Upload files</string>
+    <string name="upload_folder">Upload folder</string>
+    <string name="folder_name">Folder name</string>
+    <string name="create">Create</string>
+    <string name="cancel">Cancel</string>
+    <string name="selected_count">%1$d selected</string>
+    <string name="confirm_delete_title">Delete selected items?</string>
+    <string name="confirm_delete_message">Delete %1$d selected items? This cannot be undone.</string>
+    <string name="action_not_permitted">This action is not permitted by the server.</string>
 </resources>

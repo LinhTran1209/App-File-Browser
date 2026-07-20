@@ -1,6 +1,8 @@
 package com.j2team.fileserver.core.network
 
 import com.j2team.fileserver.core.model.RemoteResource
+import com.j2team.fileserver.core.model.ResourcePermissions
+import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.session.ApiResult
 import org.json.JSONArray
@@ -107,6 +109,30 @@ class FileBrowserClient {
         body
     }
 
+    suspend fun createDirectory(profile: ServerProfile, token: String? = null, path: String): Result<Unit> = runCatching {
+        require(path.isNotBlank() && path != "/") { "Directory path is required" }
+        val connection = open(apiUrl(profile, "/api/resources", path), "POST").apply {
+            setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+        }
+        val code = connection.responseCode
+        require(code in 200..299) { requestError("Unable to create folder", code, connection) }
+    }
+
+    /** Deletes resources one by one so an authorization rejection cannot delete later selections. */
+    suspend fun delete(profile: ServerProfile, token: String? = null, paths: List<String>): Result<Unit> = runCatching {
+        require(paths.isNotEmpty()) { "At least one resource is required" }
+        paths.forEach { path ->
+            require(path.isNotBlank() && path != "/") { "Resource path is required" }
+            val connection = open(apiUrl(profile, "/api/resources", path), "DELETE").apply {
+                setRequestProperty("Accept", "application/json")
+                if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            }
+            val code = connection.responseCode
+            require(code in 200..299) { requestError("Unable to delete resource", code, connection) }
+        }
+    }
+
     fun login(profile: ServerProfile, username: String, password: String): Result<String> = runCatching {
         val connection = open(profile.endpoint + "api/login", "POST")
         connection.setRequestProperty("Content-Type", "application/json")
@@ -119,20 +145,31 @@ class FileBrowserClient {
     fun list(profile: ServerProfile, token: String? = null, path: String = "/"): Result<List<RemoteResource>> =
         listResult(profile, token, path).toResult()
 
-    fun listResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<List<RemoteResource>> = try {
+    fun listResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<List<RemoteResource>> =
+        listWithPermissionsResult(profile, token, path).map { it.resources }
+
+    fun listWithPermissionsResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<ResourceListing> = try {
         val url = profile.endpoint.trimEnd('/') + "/api/resources" + if (path.startsWith("/")) path else "/$path"
         val connection = open(url, "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
         val code = connection.responseCode
         if (code !in 200..299) return ApiResult(code, error = IOException("Unable to list files ($code)"))
         val body = connection.inputStream.bufferedReader().use { it.readText() }
-        val array = if (body.trimStart().startsWith("[")) JSONArray(body) else JSONObject(body).optJSONArray("items") ?: JSONArray()
-        ApiResult(code, buildList {
+        val response = body.takeUnless { it.trimStart().startsWith("[") }?.let(::JSONObject)
+        val responsePermissions = response?.let(::permissionsOf) ?: ResourcePermissions()
+        val array = if (response == null) JSONArray(body) else response.optJSONArray("items") ?: JSONArray()
+        ApiResult(code, ResourceListing(buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
-                add(RemoteResource(item.optString("name"), item.optString("path", path), item.optBoolean("isDir"), item.optLong("size")))
+                add(RemoteResource(
+                    name = item.optString("name"),
+                    path = item.optString("path", path),
+                    isDirectory = item.optBoolean("isDir"),
+                    size = item.optLong("size"),
+                    permissions = permissionsOf(item, responsePermissions),
+                ))
             }
-        })
+        }, responsePermissions))
     } catch (error: Throwable) {
         ApiResult(-1, error = error)
     }
@@ -186,5 +223,25 @@ class FileBrowserClient {
 
     private fun encodePath(path: String): String = path.split('/').joinToString("/") { segment ->
         java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
+    }
+
+    private fun permissionsOf(item: JSONObject, inherited: ResourcePermissions = ResourcePermissions()): ResourcePermissions {
+        val permissions = item.optJSONObject("permissions") ?: item
+        fun allowed(name: String, inheritedValue: Boolean): Boolean = when {
+            permissions.has(name) -> permissions.optBoolean(name)
+            item !== permissions && item.has(name) -> item.optBoolean(name)
+            else -> inheritedValue
+        }
+        return ResourcePermissions(
+            canDownload = allowed("canDownload", inherited.canDownload),
+            canUpload = allowed("canUpload", inherited.canUpload),
+            canCreate = allowed("canCreate", inherited.canCreate),
+            canDelete = allowed("canDelete", inherited.canDelete),
+        )
+    }
+
+    private fun requestError(prefix: String, code: Int, connection: HttpURLConnection): String {
+        val message = connection.errorStream?.bufferedReader()?.use { it.readText().trim() }.orEmpty()
+        return if (message.isBlank()) "$prefix ($code)" else "$prefix ($code): $message"
     }
 }
