@@ -48,6 +48,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -87,7 +89,8 @@ fun BrowserScreen(
     var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var directoryPermissions by remember { mutableStateOf(ResourcePermissions()) }
     var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var listError by remember { mutableStateOf<String?>(null) }
+    var mutationError by remember { mutableStateOf<String?>(null) }
     var downloadError by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var actionMenuOpen by remember { mutableStateOf(false) }
@@ -97,6 +100,7 @@ fun BrowserScreen(
     var mutating by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<RemoteResource?>(null) }
     val unavailableDirectory = stringResource(R.string.download_directory_unavailable)
+    val notPermittedMessage = stringResource(R.string.action_not_permitted)
 
     fun refresh() {
         val current = profile ?: return
@@ -108,9 +112,9 @@ fun BrowserScreen(
                     resources = listing.resources.filter { settings.showHiddenFiles || !it.name.startsWith(".") }
                         .sortedWith(compareByDescending<RemoteResource> { it.isDirectory }.thenBy { it.name.lowercase() })
                     selectedPaths = selectedPaths.intersect(resources.mapTo(mutableSetOf()) { it.path })
-                    error = null
+                    listError = null
                 }
-                .onFailure { error = it.message ?: it.toString() }
+                .onFailure { listError = it.message ?: it.toString() }
             loading = false
         }
     }
@@ -118,6 +122,10 @@ fun BrowserScreen(
 
     fun uploadFile(uri: Uri) {
         val current = profile ?: return
+        if (!directoryPermissions.canUpload) {
+            mutationError = notPermittedMessage
+            return
+        }
         scope.launch {
             val name = displayName(context.contentResolver, uri) ?: "upload.bin"
             val temporary = File.createTempFile("upload-", ".part", context.cacheDir)
@@ -125,6 +133,8 @@ fun BrowserScreen(
                 withContext(Dispatchers.IO) {
                     context.contentResolver.openInputStream(uri)?.use { input -> temporary.outputStream().use(input::copyTo) }
                         ?: error("Unable to read selected file")
+                    val permissions = sessionRepository.currentPermissions(current).getOrThrow()
+                    if (!permissions.canUpload) throw UploadNotPermitted()
                 }
                 var task = transferStore.enqueue(name, path, TransferDirection.Upload, temporary.length())
                 task = transferStore.save(task.copy(state = TransferState.Running))
@@ -136,20 +146,27 @@ fun BrowserScreen(
                     transferStore.update(task.id, task.totalBytes, TransferState.Completed)
                     refresh()
                 }.onFailure { transferStore.update(task.id, task.transferredBytes, TransferState.Failed, it.message) }
+            } catch (error: Throwable) {
+                mutationError = if (error is UploadNotPermitted) notPermittedMessage else error.message ?: error.toString()
             } finally {
                 temporary.delete()
             }
         }
     }
 
-    val uploadFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(::uploadFile) }
+    val uploadFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && directoryPermissions.canUpload) uploadFile(uri)
+        else if (uri != null) mutationError = notPermittedMessage
+    }
     val uploadFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         val current = profile ?: return@rememberLauncherForActivityResult
-        if (uri != null) scope.launch {
+        if (uri != null && directoryPermissions.canUpload && directoryPermissions.canCreate) scope.launch {
             withContext(Dispatchers.IO) {
                 uploadTree(context, uri, current, path, sessionRepository, transferStore)
-            }.onSuccess { refresh() }.onFailure { error = it.message ?: it.toString() }
-        }
+            }.onSuccess { refresh() }.onFailure {
+                mutationError = if (it is UploadNotPermitted) notPermittedMessage else it.message ?: it.toString()
+            }
+        } else if (uri != null) mutationError = notPermittedMessage
     }
 
     val selected = resources.filter { it.path in selectedPaths }
@@ -201,7 +218,7 @@ fun BrowserScreen(
                         scope.launch {
                             withContext(Dispatchers.IO) { sessionRepository.createDirectory(current, BrowserPath.child(path, folderName.trim())) }
                                 .onSuccess { folderName = ""; createFolderOpen = false; refresh() }
-                                .onFailure { error = it.message ?: it.toString() }
+                                .onFailure { mutationError = it.message ?: it.toString() }
                             mutating = false
                         }
                     },
@@ -226,7 +243,7 @@ fun BrowserScreen(
                             withContext(Dispatchers.IO) { sessionRepository.delete(current, selected.map { it.path }) }
                                 .onSuccess { selectedPaths = emptySet(); deleteConfirmationOpen = false; refresh() }
                                 .onFailure {
-                                    error = it.message ?: it.toString()
+                                    mutationError = it.message ?: it.toString()
                                     deleteConfirmationOpen = false
                                     refresh()
                                 }
@@ -260,27 +277,36 @@ fun BrowserScreen(
             if (BrowserPath.normalize(path) != "/") TextButton(onClick = { path = BrowserPath.parent(path) }) { Text("‹") }
             Text(path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        val actionLabel = stringResource(R.string.browser_actions)
+        val actionLongPressLabel = stringResource(R.string.browser_actions_long_press)
         Box(
-            Modifier.fillMaxWidth().height(48.dp).combinedClickable(onClick = {}, onLongClick = { actionMenuOpen = true }),
+            Modifier.fillMaxWidth().height(48.dp)
+                .semantics { contentDescription = actionLabel }
+                .combinedClickable(
+                    onClickLabel = actionLabel,
+                    onLongClickLabel = actionLongPressLabel,
+                    onClick = { actionMenuOpen = true },
+                    onLongClick = { actionMenuOpen = true },
+                ),
         ) {
             DropdownMenu(expanded = actionMenuOpen, onDismissRequest = { actionMenuOpen = false }) {
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.new_folder)) },
                     leadingIcon = { Icon(painterResource(AppIcons.NewFolder), null) },
                     enabled = directoryPermissions.canCreate,
-                    onClick = { actionMenuOpen = false; createFolderOpen = true },
+                    onClick = { mutationError = null; actionMenuOpen = false; createFolderOpen = true },
                 )
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.upload_files)) },
                     leadingIcon = { Icon(painterResource(AppIcons.Upload), null) },
                     enabled = directoryPermissions.canUpload,
-                    onClick = { actionMenuOpen = false; uploadFilePicker.launch(arrayOf("*/*")) },
+                    onClick = { mutationError = null; actionMenuOpen = false; uploadFilePicker.launch(arrayOf("*/*")) },
                 )
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.upload_folder)) },
                     leadingIcon = { Icon(painterResource(AppIcons.Upload), null) },
                     enabled = directoryPermissions.canUpload && directoryPermissions.canCreate,
-                    onClick = { actionMenuOpen = false; uploadFolderPicker.launch(null) },
+                    onClick = { mutationError = null; actionMenuOpen = false; uploadFolderPicker.launch(null) },
                 )
             }
         }
@@ -289,7 +315,13 @@ fun BrowserScreen(
             Text(stringResource(R.string.items_count, resources.size), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        error?.let { Text(stringResource(R.string.connection_failed, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+        listError?.let { Text(stringResource(R.string.connection_failed, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+        mutationError?.let { message ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f))
+                TextButton(onClick = { mutationError = null }) { Text(stringResource(R.string.dismiss)) }
+            }
+        }
         downloadError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             items(resources, key = { it.path }) { item ->
@@ -341,6 +373,8 @@ private fun ResourceRow(
 
 private fun Set<String>.toggle(path: String): Set<String> = if (path in this) this - path else this + path
 
+private class UploadNotPermitted : IllegalStateException()
+
 private fun displayName(resolver: ContentResolver, uri: Uri): String? = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
     if (cursor.moveToFirst()) cursor.getString(0) else null
 }
@@ -358,6 +392,8 @@ private suspend fun uploadTree(
     val rootUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootId)
     val rootName = displayName(resolver, rootUri) ?: "folder"
     val remoteRoot = BrowserPath.child(parentPath, rootName)
+    val permissions = sessionRepository.currentPermissions(profile).getOrThrow()
+    if (!permissions.canUpload || !permissions.canCreate) throw UploadNotPermitted()
     sessionRepository.createDirectory(profile, remoteRoot).getOrThrow()
     uploadChildren(resolver, treeUri, rootId, profile, remoteRoot, sessionRepository, transferStore, context.cacheDir)
 }
@@ -380,6 +416,8 @@ private suspend fun uploadChildren(
             val mimeType = cursor.getString(2)
             if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
                 val remoteDirectory = BrowserPath.child(remoteParent, name)
+                val permissions = sessionRepository.currentPermissions(profile).getOrThrow()
+                if (!permissions.canUpload || !permissions.canCreate) throw UploadNotPermitted()
                 sessionRepository.createDirectory(profile, remoteDirectory).getOrThrow()
                 uploadChildren(resolver, treeUri, childId, profile, remoteDirectory, sessionRepository, transferStore, cacheDir)
             } else {
@@ -387,6 +425,8 @@ private suspend fun uploadChildren(
                 try {
                     val source = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
                     resolver.openInputStream(source)?.use { input -> local.outputStream().use(input::copyTo) } ?: error("Unable to read $name")
+                    val permissions = sessionRepository.currentPermissions(profile).getOrThrow()
+                    if (!permissions.canUpload || !permissions.canCreate) throw UploadNotPermitted()
                     var task = transferStore.enqueue(name, remoteParent, TransferDirection.Upload, local.length())
                     task = transferStore.save(task.copy(state = TransferState.Running))
                     sessionRepository.uploadOnce(profile, remoteParent, local) { sent, _ -> transferStore.update(task.id, sent, TransferState.Running) }.getOrThrow()

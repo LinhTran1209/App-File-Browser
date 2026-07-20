@@ -3,6 +3,7 @@ package com.j2team.fileserver.core.session
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ResourceListing
+import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.network.FileBrowserClient
 import java.io.File
 
@@ -51,8 +52,21 @@ class SessionRepository(
     suspend fun list(profile: ServerProfile, path: String): Result<List<RemoteResource>> =
         authenticated(profile) { token -> transport.listResult(profile, token, path) }
 
+    suspend fun currentPermissions(profile: ServerProfile): Result<ResourcePermissions> =
+        authenticated(profile) { token -> transport.currentPermissionsResult(profile, token) }
+
     suspend fun listWithPermissions(profile: ServerProfile, path: String): Result<ResourceListing> =
-        authenticated(profile) { token -> transport.listWithPermissionsResult(profile, token, path) }
+        authenticated(profile) { token ->
+            val capabilities = transport.currentPermissionsResult(profile, token)
+            if (capabilities.code !in 200..299) return@authenticated ApiResult(capabilities.code, error = capabilities.error)
+            val permission = capabilities.value ?: ResourcePermissions()
+            transport.listWithPermissionsResult(profile, token, path).map { listing ->
+                listing.copy(
+                    resources = listing.resources.map { it.copy(permissions = permission) },
+                    directoryPermissions = permission,
+                )
+            }
+        }
 
     suspend fun download(
         profile: ServerProfile,

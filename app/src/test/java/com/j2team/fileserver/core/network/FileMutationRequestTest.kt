@@ -11,6 +11,56 @@ import com.sun.net.httpserver.HttpServer
 
 class FileMutationRequestTest {
     @Test
+    fun currentUserPermissionsUseOfficialPermShapeAndSelfEndpoint() = runTest {
+        withServer { request ->
+            assertEquals("GET", request.method)
+            assertEquals("/api/users/7", request.path)
+            assertEquals(tokenForUser(7), request.authHeader)
+            200 to """{"id":7,"username":"reader","perm":{"download":true,"create":true,"delete":false}}"""
+        }.let { server -> try {
+            val result = FileBrowserClient().currentPermissionsResult(profile(server), tokenForUser(7)).toResult()
+
+            assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
+            result.getOrThrow().let { permissions ->
+                assertTrue(permissions.canDownload)
+                assertTrue(permissions.canCreate)
+                assertTrue(permissions.canUpload)
+                assertFalse(permissions.canDelete)
+            }
+        } finally { server.stop(0) } }
+    }
+
+    @Test
+    fun malformedPermissionShapeFailsClosed() = runTest {
+        withServer { request ->
+            assertEquals("/api/users/7", request.path)
+            200 to """{"id":7,"perm":["download", "create", "delete"]}"""
+        }.let { server -> try {
+            val result = FileBrowserClient().currentPermissionsResult(profile(server), tokenForUser(7)).toResult()
+
+            assertTrue(result.isSuccess)
+            result.getOrThrow().let { permissions ->
+                assertFalse(permissions.canDownload)
+                assertFalse(permissions.canUpload)
+                assertFalse(permissions.canCreate)
+                assertFalse(permissions.canDelete)
+            }
+        } finally { server.stop(0) } }
+    }
+
+    @Test
+    fun listEncodesEachPathSegmentExactlyOnce() = runTest {
+        withServer { request ->
+            assertEquals("GET", request.method)
+            assertEquals("/api/resources/Media/50%25%20off/%23tag", request.path)
+            403 to "forbidden"
+        }.let { server -> try {
+            val result = FileBrowserClient().list(profile(server), "token", "/Media/50% off/#tag")
+
+            assertFalse(result.isSuccess)
+        } finally { server.stop(0) } }
+    }
+    @Test
     fun createDirectoryPostsEncodedPathAndAuthHeader() = runTest {
         withServer { request ->
             assertEquals("POST", request.method)
@@ -73,4 +123,7 @@ class FileMutationRequestTest {
         }
 
     private data class Request(val method: String, val path: String, val authHeader: String?)
+
+    private fun tokenForUser(id: Int): String = "header." + java.util.Base64.getUrlEncoder().withoutPadding()
+        .encodeToString("{\"user\":{\"id\":$id}}".toByteArray()) + ".signature"
 }

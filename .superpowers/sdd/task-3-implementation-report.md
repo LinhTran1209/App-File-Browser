@@ -8,6 +8,13 @@
 - Added `BrowserScreen` with a 48 dp blank long-press action strip, permission-gated folder/file/tree upload actions, selection mode, action intersections, and confirmation-gated deletion without optimistic removal.
 - Preserved SAF download copying and the existing preview path.
 
+## Review corrections
+
+- File Browser v2 capability source is the authenticated self-user endpoint `GET /api/users/{id}`. The id comes from the server-issued JWT `user.id`; its response uses `perm.download`, `perm.create`, and `perm.delete`. Upload and create both map to `perm.create`, matching File Browser's own frontend. Malformed or absent fields remain denied.
+- Directory listing URLs now use the shared segment-by-segment encoder. Upload permissions are rechecked after picker return and immediately before each tree/file mutation.
+- Listing and mutation errors are independent, so a reconciliation refresh cannot erase a delete rejection. The blank action strip now has localized accessibility labels and a non-inert click action.
+- New-folder input now accepts exactly one non-traversal path segment.
+
 ## Test evidence
 
 - RED: focused tests initially failed because permission and mutation types did not exist.

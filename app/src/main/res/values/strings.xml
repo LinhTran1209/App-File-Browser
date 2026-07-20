@@ -57,4 +57,7 @@
     <string name="confirm_delete_title">Delete selected items?</string>
     <string name="confirm_delete_message">Delete %1$d selected items? This cannot be undone.</string>
     <string name="action_not_permitted">This action is not permitted by the server.</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="browser_actions">File actions</string>
+    <string name="browser_actions_long_press">Long press to show file actions</string>
 </resources>

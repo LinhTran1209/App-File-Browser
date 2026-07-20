@@ -13,6 +13,7 @@ import java.io.IOException
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Base64
 
 class FileBrowserClient {
     /** Downloads a remote resource to [destination] without buffering it in memory. */
@@ -148,8 +149,28 @@ class FileBrowserClient {
     fun listResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<List<RemoteResource>> =
         listWithPermissionsResult(profile, token, path).map { it.resources }
 
+    /** Reads File Browser v2's authenticated self-user record: `{"perm":{"download", "create", "delete"}}`. */
+    fun currentPermissionsResult(profile: ServerProfile, token: String?): ApiResult<ResourcePermissions> = try {
+        val userId = currentUserId(token) ?: return ApiResult(-1, error = IOException("Unable to identify the authenticated user"))
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/users/$userId", "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Unable to load permissions ($code)"))
+        val response = connection.inputStream.bufferedReader().use { it.readText() }
+        val permissions = permissionObject(response).orEmpty()
+        ApiResult(code, ResourcePermissions(
+            canDownload = permissionEnabled(permissions, "download"),
+            // File Browser v2 uses create permission for both folder creation and multipart upload.
+            canUpload = permissionEnabled(permissions, "create"),
+            canCreate = permissionEnabled(permissions, "create"),
+            canDelete = permissionEnabled(permissions, "delete"),
+        ))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
     fun listWithPermissionsResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<ResourceListing> = try {
-        val url = profile.endpoint.trimEnd('/') + "/api/resources" + if (path.startsWith("/")) path else "/$path"
+        val url = apiUrl(profile, "/api/resources", path)
         val connection = open(url, "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
         val code = connection.responseCode
@@ -243,5 +264,32 @@ class FileBrowserClient {
     private fun requestError(prefix: String, code: Int, connection: HttpURLConnection): String {
         val message = connection.errorStream?.bufferedReader()?.use { it.readText().trim() }.orEmpty()
         return if (message.isBlank()) "$prefix ($code)" else "$prefix ($code): $message"
+    }
+
+    private fun currentUserId(token: String?): Long? = runCatching {
+        val payload = token?.split('.')?.getOrNull(1) ?: throw IllegalArgumentException("Missing JWT payload")
+        val json = String(Base64.getUrlDecoder().decode(payload), Charsets.UTF_8)
+        Regex("\\\"id\\\"\\s*:\\s*(\\d+)").find(json)?.groupValues?.get(1)?.toLong()?.takeIf { it > 0 }
+    }.getOrNull()
+
+    private fun permissionEnabled(permissions: String, name: String): Boolean =
+        Regex("\\\"${Regex.escape(name)}\\\"\\s*:\\s*true\\b").containsMatchIn(permissions)
+
+    /** Extracts only a JSON object assigned to the official `perm` field; malformed values stay denied. */
+    private fun permissionObject(response: String): String? {
+        val field = Regex("\\\"perm\\\"\\s*:").find(response) ?: return null
+        val start = response.indexOf('{', field.range.last + 1)
+        if (start < 0) return null
+        var depth = 0
+        for (index in start until response.length) {
+            when (response[index]) {
+                '{' -> depth += 1
+                '}' -> {
+                    depth -= 1
+                    if (depth == 0) return response.substring(start, index + 1)
+                }
+            }
+        }
+        return null
     }
 }
