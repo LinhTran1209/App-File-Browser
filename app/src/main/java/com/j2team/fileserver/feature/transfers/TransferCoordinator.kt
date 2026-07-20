@@ -25,8 +25,8 @@ class TransferCoordinator(
     private val sessionRepository: SessionRepository,
     private val profile: ServerProfile,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val streamSemaphore = Semaphore(2)
+    private val scope get() = TransferRuntime.scope
+    private val streamSemaphore get() = TransferRuntime.streamSemaphore
 
     suspend fun enqueueFile(uri: Uri, remotePath: String): TransferTask = withContext(Dispatchers.IO) {
         val source = DocumentFile.fromSingleUri(context, uri) ?: throw IOException("Unable to access selected file")
@@ -67,12 +67,7 @@ class TransferCoordinator(
         if (conflict == DownloadConflict.Cancel) return@withContext null
         val root = destinationRoot(treeUri)
         val finalName = when (conflict) {
-            DownloadConflict.Replace -> {
-                root.findFile(name)?.let { existing ->
-                    if (!existing.delete()) throw IOException("Unable to replace $name")
-                }
-                name
-            }
+            DownloadConflict.Replace -> name
             DownloadConflict.KeepBoth -> uniqueName(root, name)
             DownloadConflict.Cancel -> error("handled above")
         }
@@ -93,14 +88,17 @@ class TransferCoordinator(
         (task.state == TransferState.Failed || task.state == TransferState.Cancelled) && task.profileId == profile.id
 
     private suspend fun enqueueFolderChildren(folder: DocumentFile, remoteParent: String) {
-        folder.listFiles().forEach { child ->
+        val children = folder.listFiles().sortedBy { it.name.orEmpty() }
+        // Complete directory creation for this subtree before any file is queued.
+        children.filter { it.isDirectory }.forEach { child ->
             val name = child.name ?: return@forEach
-            if (child.isDirectory) {
-                val remoteDirectory = BrowserPath.child(remoteParent, name)
-                ensureUploadPermission(requiresCreate = true)
-                sessionRepository.createDirectory(profile, remoteDirectory).getOrThrow()
-                enqueueFolderChildren(child, remoteDirectory)
-            } else if (child.isFile) {
+            val remoteDirectory = BrowserPath.child(remoteParent, name)
+            ensureUploadPermission(requiresCreate = true)
+            sessionRepository.createDirectory(profile, remoteDirectory).getOrThrow()
+            enqueueFolderChildren(child, remoteDirectory)
+        }
+        children.filter { it.isFile }.forEach { child ->
+            val name = child.name ?: return@forEach
                 val task = transferStore.enqueue(
                     name = name,
                     path = remoteParent,
@@ -110,7 +108,6 @@ class TransferCoordinator(
                     profileId = profile.id,
                 )
                 startUpload(task)
-            }
         }
     }
 
@@ -165,18 +162,28 @@ class TransferCoordinator(
                     val safeTotal = maxOf(reportedTotal, copied)
                     latest = transferStore.save(latest.copy(totalBytes = safeTotal, transferredBytes = copied))
                 }.getOrThrow()
-                if (root.findFile(task.name) != null) throw IOException("Destination already exists")
-                val final = root.createFile("application/octet-stream", task.name) ?: throw IOException("Unable to create final download")
-                context.contentResolver.openInputStream(part.uri)?.use { input ->
-                    context.contentResolver.openOutputStream(final.uri, "w")?.use { output ->
+                // Preserve the old file until staging has succeeded. Rename it aside so a finalization failure can restore it.
+                val backupName = ".${task.name}.${task.id}.backup"
+                val existing = root.findFile(task.name)
+                if (existing != null && !existing.renameTo(backupName)) throw IOException("Unable to safely replace destination")
+                try {
+                    val final = root.createFile("application/octet-stream", task.name) ?: throw IOException("Unable to create final download")
+                    context.contentResolver.openInputStream(part.uri)?.use { input ->
+                        context.contentResolver.openOutputStream(final.uri, "w")?.use { output ->
                         val buffer = ByteArray(8 * 1024)
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
                             output.write(buffer, 0, count)
                         }
-                    } ?: throw IOException("Unable to finalize download")
-                } ?: throw IOException("Unable to read temporary download")
+                        } ?: throw IOException("Unable to finalize download")
+                    } ?: throw IOException("Unable to read temporary download")
+                    root.findFile(backupName)?.delete()
+                } catch (error: Throwable) {
+                    root.findFile(task.name)?.delete()
+                    root.findFile(backupName)?.renameTo(task.name)
+                    throw error
+                }
                 transferStore.update(latest.id, latest.totalBytes.coerceAtLeast(latest.transferredBytes), TransferState.Completed)
             } catch (error: Throwable) {
                 val persisted = transferStore.all().firstOrNull { it.id == latest.id } ?: latest
@@ -206,4 +213,10 @@ class TransferCoordinator(
             .map { "$stem ($it)$extension" }
             .first { root.findFile(it) == null }
     }
+}
+
+/** Process-wide worker owner: profile-specific facades share one scope and two-stream gate. */
+object TransferRuntime {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val streamSemaphore = Semaphore(2)
 }

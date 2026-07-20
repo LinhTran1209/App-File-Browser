@@ -4,6 +4,8 @@ enum class TransferDirection { Download, Upload }
 enum class TransferState { Queued, Running, Paused, Completed, Failed, Cancelled }
 enum class TransferTab { Downloads, Uploads }
 
+object TransferErrors { const val Interrupted = "transfer_interrupted_after_restart" }
+
 data class TransferTask(
     val id: String,
     val name: String,
@@ -35,3 +37,9 @@ fun List<TransferTask>.forTab(tab: TransferTab): List<TransferTask> = filter { t
         TransferTab.Uploads -> TransferDirection.Upload
     }
 }
+
+fun recoverInterruptedTransfers(tasks: List<TransferTask>): List<TransferTask> = tasks.map { task ->
+    if (task.state == TransferState.Queued || task.state == TransferState.Running) task.copy(state = TransferState.Failed, error = TransferErrors.Interrupted) else task
+}
+
+fun removeTransfer(tasks: List<TransferTask>, id: String): List<TransferTask> = tasks.filterNot { it.id == id }

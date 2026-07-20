@@ -22,3 +22,9 @@ Verification:
 Concerns:
 
 - Existing durable tasks created by earlier app versions lack a profile owner and are deliberately not retryable; users can dismiss and enqueue them again.
+
+Review follow-up:
+
+- Process-owned application store/session and a single `TransferRuntime` scope/semaphore now survive Activity/profile changes; recovered active tasks fail with `transfer_interrupted_after_restart` and never auto-replay.
+- Dismiss updates persistence and the observable queue atomically. SAF Replace preserves the existing document until `.part` staging completes, using a restore-on-finalization-failure backup rename.
+- Folder traversal creates the complete directory subtree before file tasks are enqueued. Focused reliability tests and final `testDebugUnitTest lintDebug assembleDebug` passed.

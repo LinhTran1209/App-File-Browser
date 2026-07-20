@@ -85,8 +85,8 @@ class MainActivity : ComponentActivity() {
             FileServerApp(
                 serverStore = ServerStore(this),
                 settingsStore = SettingsStore(this),
-                transferStore = TransferStore(this),
-                sessionRepository = SessionRepository(EncryptedSecretStore(applicationContext), FileBrowserClient()),
+                transferStore = (application as FileServerApp).transferStore,
+                sessionRepository = (application as FileServerApp).sessionRepository,
                 onLanguageChanged = ::applyLanguage,
             )
         }
