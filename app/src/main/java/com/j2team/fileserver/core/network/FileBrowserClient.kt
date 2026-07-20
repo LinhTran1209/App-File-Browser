@@ -20,11 +20,20 @@ class FileBrowserClient {
         remotePath: String,
         destination: File,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
-    ): Result<File> = runCatching {
+    ): Result<File> = downloadResult(profile, token, remotePath, destination, onProgress).toResult()
+
+    fun downloadResult(
+        profile: ServerProfile,
+        token: String? = null,
+        remotePath: String,
+        destination: File,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): ApiResult<File> = try {
         require(remotePath.isNotBlank()) { "Remote path is required" }
         val connection = open(rawUrl(profile, remotePath), "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
-        require(connection.responseCode in 200..299) { "Download failed (${connection.responseCode})" }
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Download failed ($code)"))
 
         destination.parentFile?.mkdirs()
         val temporary = File(destination.parentFile ?: File("."), ".${destination.name}.part")
@@ -45,10 +54,12 @@ class FileBrowserClient {
             }
             if (destination.exists() && !destination.delete()) throw IOException("Unable to replace destination")
             if (!temporary.renameTo(destination)) throw IOException("Unable to finalize download")
-            destination
+            ApiResult(code, destination)
         } finally {
             if (temporary.exists()) temporary.delete()
         }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     /** Uploads one local file as multipart/form-data to a remote directory. */
@@ -134,10 +145,18 @@ class FileBrowserClient {
         token: String?,
         remotePath: String,
         maxBytes: Int = 1_000_000,
-    ): Result<String> = runCatching {
+    ): Result<String> = readTextResult(profile, token, remotePath, maxBytes).toResult()
+
+    fun readTextResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        maxBytes: Int = 1_000_000,
+    ): ApiResult<String> = try {
         val connection = open(rawUrl(profile, remotePath), "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
-        require(connection.responseCode in 200..299) { "Unable to open file (${connection.responseCode})" }
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Unable to open file ($code)"))
         connection.inputStream.buffered().use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -147,8 +166,10 @@ class FileBrowserClient {
                 output.write(buffer, 0, count)
             }
             require(output.size() <= maxBytes) { "Text file is too large to preview" }
-            output.toString(Charsets.UTF_8.name())
+            ApiResult(code, output.toString(Charsets.UTF_8.name()))
         }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     private fun open(url: String, method: String): HttpURLConnection = (URL(url).openConnection() as HttpURLConnection).apply {

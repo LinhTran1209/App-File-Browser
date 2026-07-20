@@ -16,6 +16,36 @@ class SessionPolicyTest {
         assertEquals(2, transport.requestCalls)
     }
 
+    @Test
+    fun forbiddenTokenRelogsInExactlyOnce() = runTest {
+        val transport = FakeTransport(responses = mutableListOf(403, 200, 200))
+        val policy = SessionPolicy(transport)
+
+        assertTrue(policy.execute("old-token") { transport.request(it) }.isSuccess)
+        assertEquals(1, transport.loginCalls)
+        assertEquals(2, transport.requestCalls)
+    }
+
+    @Test
+    fun serverFailureDoesNotRelogIn() = runTest {
+        val transport = FakeTransport(responses = mutableListOf(500))
+        val policy = SessionPolicy(transport)
+
+        assertTrue(policy.execute("old-token") { transport.request(it) }.isFailure)
+        assertEquals(0, transport.loginCalls)
+        assertEquals(1, transport.requestCalls)
+    }
+
+    @Test
+    fun rejectedRenewedTokenDoesNotRelogInAgain() = runTest {
+        val transport = FakeTransport(responses = mutableListOf(401, 200, 401))
+        val policy = SessionPolicy(transport)
+
+        assertTrue(policy.execute("old-token") { transport.request(it) }.isFailure)
+        assertEquals(1, transport.loginCalls)
+        assertEquals(2, transport.requestCalls)
+    }
+
     private class FakeTransport(private val responses: MutableList<Int>) : SessionPolicy.TokenRefresher {
         var loginCalls = 0
         var requestCalls = 0

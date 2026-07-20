@@ -13,6 +13,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 interface SecretStore {
+    /** Consumes [credential.password] and clears it before returning. */
     fun put(profileId: String, credential: StoredCredential)
     fun get(profileId: String): StoredCredential?
     fun delete(profileId: String)
@@ -35,6 +36,7 @@ class EncryptedSecretStore(context: Context) : SecretStore {
                 .apply()
         } finally {
             plaintext.fill(0)
+            credential.password.fill('\u0000')
         }
     }
 

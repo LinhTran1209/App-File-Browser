@@ -1,7 +1,9 @@
 package com.j2team.fileserver.core.session
 
 import com.j2team.fileserver.core.model.ServerProfile
+import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.network.FileBrowserClient
+import java.io.File
 
 class SessionRepository(
     private val secretStore: SecretStore,
@@ -21,7 +23,7 @@ class SessionRepository(
         val passwordText = password.concatToString()
         try {
             val token = transport.login(profile, username, passwordText).getOrThrow()
-            secretStore.put(profile.id, StoredCredential(username, password.copyOf()))
+            secretStore.put(profile.id, StoredCredential(username, password))
             tokenStore[profile.id] = token
             AuthenticatedSession(profile, token)
         } finally {
@@ -44,6 +46,37 @@ class SessionRepository(
             }
         }
     }).execute(tokenStore[profile.id].orEmpty(), call)
+
+    suspend fun list(profile: ServerProfile, path: String): Result<List<RemoteResource>> =
+        authenticated(profile) { token -> transport.listResult(profile, token, path) }
+
+    suspend fun download(
+        profile: ServerProfile,
+        remotePath: String,
+        destination: File,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): Result<File> = authenticated(profile) { token ->
+        transport.downloadResult(profile, token, remotePath, destination, onProgress)
+    }
+
+    suspend fun readText(profile: ServerProfile, remotePath: String): Result<String> =
+        authenticated(profile) { token -> transport.readTextResult(profile, token, remotePath) }
+
+    /**
+     * Refreshes authentication with a safe read first, then sends the upload exactly once.
+     * The upload itself is never replayed because its acceptance cannot be determined safely.
+     */
+    suspend fun uploadOnce(
+        profile: ServerProfile,
+        parentPath: String,
+        file: File,
+        onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null,
+    ): Result<String> {
+        val token = authenticated(profile) { candidate ->
+            transport.listResult(profile, candidate, profile.basePath).map { candidate }
+        }.getOrElse { return Result.failure(it) }
+        return transport.upload(profile, token, parentPath, file, onProgress)
+    }
 
     fun clear(profileId: String) {
         tokenStore.remove(profileId)

@@ -95,7 +95,6 @@ private fun FileServerApp(
         var screen by remember { mutableStateOf(Screen.Servers) }
         var profiles by remember { mutableStateOf(serverStore.all()) }
         var selected by remember { mutableStateOf<ServerProfile?>(null) }
-        var token by remember { mutableStateOf<String?>(null) }
         var connectionError by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
 
@@ -111,7 +110,6 @@ private fun FileServerApp(
                             val result = withContext(Dispatchers.IO) { sessionRepository.open(profile) }
                             result.onSuccess {
                                 selected = it.profile
-                                token = it.token
                                 screen = Screen.Browser
                             }.onFailure {
                                 if (it is LoginRequiredException) {
@@ -144,13 +142,13 @@ private fun FileServerApp(
                     profile = selected,
                     sessionRepository = sessionRepository,
                     onBack = { screen = Screen.Servers },
-                    onConnected = { token = it; screen = Screen.Browser },
+                    onConnected = { screen = Screen.Browser },
                 )
                 Screen.Browser -> BrowserScreen(
                     profile = selected,
-                    token = token,
                     settings = settings,
                     transferStore = transferStore,
+                    sessionRepository = sessionRepository,
                     onBack = { screen = Screen.Servers },
                     onTransfers = { screen = Screen.Transfers },
                 )
@@ -294,7 +292,7 @@ private fun LoginScreen(
     profile: ServerProfile?,
     sessionRepository: SessionRepository,
     onBack: () -> Unit,
-    onConnected: (String?) -> Unit,
+    onConnected: () -> Unit,
 ) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -322,7 +320,7 @@ private fun LoginScreen(
                             sessionRepository.login(current, username, password.toCharArray())
                         }
                         busy = false
-                        result.onSuccess { onConnected(it.token) }.onFailure { error = it.message }
+                        result.onSuccess { onConnected() }.onFailure { error = it.message }
                     }
                 },
                 enabled = !busy && username.isNotBlank() && password.isNotBlank(),
@@ -336,15 +334,14 @@ private fun LoginScreen(
 @Composable
 private fun BrowserScreen(
     profile: ServerProfile?,
-    token: String?,
     settings: AppSettings,
     transferStore: TransferStore,
+    sessionRepository: SessionRepository,
     onBack: () -> Unit,
     onTransfers: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val client = remember { FileBrowserClient() }
     var path by remember { mutableStateOf(profile?.basePath ?: "/") }
     var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -355,7 +352,7 @@ private fun BrowserScreen(
         val current = profile ?: return
         loading = true
         scope.launch {
-            val result = withContext(Dispatchers.IO) { client.list(current, token, path) }
+            val result = withContext(Dispatchers.IO) { sessionRepository.list(current, path) }
             loading = false
             result.onSuccess { list ->
                 resources = list.filter { settings.showHiddenFiles || !it.name.startsWith(".") }
@@ -364,7 +361,7 @@ private fun BrowserScreen(
             }.onFailure { error = it.message }
         }
     }
-    LaunchedEffect(profile, token, path, settings.showHiddenFiles) { refresh() }
+    LaunchedEffect(profile, path, settings.showHiddenFiles) { refresh() }
 
     val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null && profile != null) {
@@ -378,7 +375,7 @@ private fun BrowserScreen(
                 var task = transferStore.enqueue(name, path, TransferDirection.Upload, temp.length())
                 task = transferStore.save(task.copy(state = TransferState.Running))
                 withContext(Dispatchers.IO) {
-                    client.upload(profile, token, path, temp) { sent, total -> transferStore.update(task.id, sent, TransferState.Running) }
+                    sessionRepository.uploadOnce(profile, path, temp) { sent, _ -> transferStore.update(task.id, sent, TransferState.Running) }
                 }.onSuccess { transferStore.update(task.id, task.totalBytes, TransferState.Completed); refresh() }
                     .onFailure { transferStore.update(task.id, task.transferredBytes, TransferState.Failed, it.message) }
                 temp.delete()
@@ -387,7 +384,7 @@ private fun BrowserScreen(
     }
 
     if (preview != null && profile != null) {
-        PreviewScreen(profile, token, preview!!, transferStore, onBack = { preview = null })
+        PreviewScreen(profile, preview!!, transferStore, sessionRepository, onBack = { preview = null })
         return
     }
 
@@ -418,7 +415,7 @@ private fun BrowserScreen(
                                 val task = transferStore.enqueue(item.name, item.path, TransferDirection.Download, item.size)
                                 transferStore.update(task.id, 0, TransferState.Running)
                                 withContext(Dispatchers.IO) {
-                                    client.download(profile, token, item.path, destination) { read, _ -> transferStore.update(task.id, read, TransferState.Running) }
+                                    sessionRepository.download(profile, item.path, destination) { read, _ -> transferStore.update(task.id, read, TransferState.Running) }
                                 }.onSuccess { transferStore.update(task.id, item.size, TransferState.Completed) }
                                     .onFailure { transferStore.update(task.id, 0, TransferState.Failed, it.message) }
                             }
@@ -453,27 +450,33 @@ private fun FileRow(item: RemoteResource, onOpen: () -> Unit, onDownload: () -> 
 @Composable
 private fun PreviewScreen(
     profile: ServerProfile,
-    token: String?,
     item: RemoteResource,
     transferStore: TransferStore,
+    sessionRepository: SessionRepository,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
-    val client = remember { FileBrowserClient() }
     val kind = PreviewRouter.kind(item.name)
     var text by remember { mutableStateOf<String?>(null) }
     var bitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var mediaFile by remember { mutableStateOf<File?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(item.path) {
         when (kind) {
-            PreviewKind.Text -> withContext(Dispatchers.IO) { client.readText(profile, token, item.path) }.onSuccess { text = it }.onFailure { error = it.message }
+            PreviewKind.Text -> withContext(Dispatchers.IO) { sessionRepository.readText(profile, item.path) }.onSuccess { text = it }.onFailure { error = it.message }
             PreviewKind.Image -> {
                 val file = File(context.cacheDir, "preview-${item.name.hashCode()}")
-                withContext(Dispatchers.IO) { client.download(profile, token, item.path, file) }
+                withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, file) }
                     .onSuccess { bitmap = BitmapFactory.decodeFile(it.path)?.asImageBitmap() }
                     .onFailure { error = it.message }
             }
-            else -> Unit
+            PreviewKind.Video, PreviewKind.Audio -> {
+                val file = File(context.cacheDir, "preview-${item.name.hashCode()}")
+                withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, file) }
+                    .onSuccess { mediaFile = it }
+                    .onFailure { error = it.message }
+            }
+            PreviewKind.Unsupported -> Unit
         }
     }
     Column(Modifier.fillMaxSize().background(Color(0xFF030712))) {
@@ -482,18 +485,20 @@ private fun PreviewScreen(
             when (kind) {
                 PreviewKind.Image -> bitmap?.let { Image(it, item.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) } ?: CircularProgressIndicator()
                 PreviewKind.Text -> Text(text ?: "Đang tải…", color = Color.White, modifier = Modifier.fillMaxSize())
-                PreviewKind.Video, PreviewKind.Audio -> AndroidView(
-                    factory = { ctx ->
-                        VideoView(ctx).apply {
-                            val controller = MediaController(ctx)
-                            controller.setAnchorView(this)
-                            setMediaController(controller)
-                            setVideoURI(Uri.parse(client.rawUrl(profile, item.path)), if (token.isNullOrBlank()) emptyMap() else mapOf("X-Auth" to token))
-                            setOnPreparedListener { start() }
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                PreviewKind.Video, PreviewKind.Audio -> mediaFile?.let { file ->
+                    AndroidView(
+                        factory = { ctx ->
+                            VideoView(ctx).apply {
+                                val controller = MediaController(ctx)
+                                controller.setAnchorView(this)
+                                setMediaController(controller)
+                                setVideoURI(Uri.fromFile(file))
+                                setOnPreparedListener { start() }
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } ?: CircularProgressIndicator()
                 PreviewKind.Unsupported -> Text(stringResource(R.string.preview_unsupported), color = Color.White)
             }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
