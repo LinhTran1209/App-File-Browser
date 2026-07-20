@@ -3,184 +3,67 @@ package com.j2team.fileserver
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.Divider
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.j2team.fileserver.core.network.Endpoint
-import com.j2team.fileserver.core.model.ServerProfile
-import com.j2team.fileserver.feature.servers.ServerStore
-import com.j2team.fileserver.core.model.RemoteResource
-import com.j2team.fileserver.core.network.FileBrowserClient
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
+import com.j2team.fileserver.core.model.*
+import com.j2team.fileserver.core.network.*
 import com.j2team.fileserver.core.ui.FileServerTheme
+import com.j2team.fileserver.feature.servers.ServerStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            FileServerAppShell(ServerStore(this))
-        }
-    }
-}
+class MainActivity : ComponentActivity() { override fun onCreate(state: Bundle?) { super.onCreate(state); setContent { Shell(ServerStore(this)) } } }
+private enum class Screen { Servers, Add, Login, Browser, Transfers, Settings }
 
-@Composable
-private fun FileServerAppShell(store: ServerStore) {
+@Composable private fun Shell(store: ServerStore) {
     var profiles by remember { mutableStateOf(store.all()) }
-    var screen by remember { mutableStateOf(AppScreen.Servers) }
+    var screen by remember { mutableStateOf(Screen.Servers) }
     var selected by remember { mutableStateOf<ServerProfile?>(null) }
     var token by remember { mutableStateOf<String?>(null) }
-    FileServerTheme {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            topBar = {
-                Surface(tonalElevation = 1.dp) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(text = stringResource(R.string.app_name), style = androidx.compose.material3.MaterialTheme.typography.titleLarge)
-                        if (screen != AppScreen.Servers) TextButton(onClick = { screen = AppScreen.Servers }) { Text("Servers") }
-                    }
-                }
-            },
-            bottomBar = {
-                Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    TextButton(onClick = { screen = AppScreen.Servers }) { Text("Servers") }
-                    TextButton(onClick = { screen = AppScreen.Transfers }) { Text("Transfers") }
-                    TextButton(onClick = { screen = AppScreen.Settings }) { Text("Settings") }
-                }
-            },
-        ) { contentPadding ->
-            Surface(modifier = Modifier.fillMaxSize().padding(contentPadding)) {
-                when (screen) {
-                    AppScreen.Servers -> ServersScreen(profiles, onAdd = { screen = AppScreen.Add }, onOpen = { selected = it; screen = AppScreen.Login }, onDelete = { store.delete(it.id); profiles = store.all() })
-                    AppScreen.Add -> AddServerScreen(onCancel = { screen = AppScreen.Servers }, onSave = { raw, name ->
-                        Endpoint.normalize(raw).onSuccess { endpoint -> store.create(name, endpoint.scheme, endpoint.host, endpoint.port, endpoint.basePath); profiles = store.all(); screen = AppScreen.Servers }
-                    })
-                    AppScreen.Login -> LoginScreen(selected, onConnected = { token = it; screen = AppScreen.Browser })
-                    AppScreen.Browser -> BrowserScreen(selected, token, onBack = { screen = AppScreen.Servers })
-                    AppScreen.Transfers -> EmptyFeatureScreen("Transfers", "Uploads and downloads will appear here")
-                    AppScreen.Settings -> EmptyFeatureScreen("Settings", "Theme, security and connection preferences")
-                }
-            }
+    FileServerTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { when (screen) {
+        Screen.Servers -> Servers(profiles, { screen = Screen.Add }, { selected = it; screen = Screen.Login }, { store.delete(it.id); profiles = store.all() }, { screen = Screen.Settings })
+        Screen.Add -> Add({ screen = Screen.Servers }) { raw, name -> Endpoint.normalize(raw).fold({ e -> store.create(name.ifBlank { "File Server" }, e.scheme, e.host, e.port, e.basePath); profiles = store.all(); screen = Screen.Servers }, { }) }
+        Screen.Login -> Login(selected, { screen = Screen.Servers }) { token = it; screen = Screen.Browser }
+        Screen.Browser -> Browser(selected, token) { screen = Screen.Servers }
+        Screen.Transfers -> Placeholder("Transfers", { screen = Screen.Servers })
+        Screen.Settings -> Placeholder("Settings", { screen = Screen.Servers })
+    } } }
+}
+
+@Composable private fun Bar(title: String, back: (() -> Unit)? = null, action: (() -> Unit)? = null) {
+    Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (back != null) TextButton(onClick = back, contentPadding = PaddingValues(0.dp)) { Text("<", style = MaterialTheme.typography.headlineMedium) }
+        Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.titleLarge); if (back == null) Text("Your servers", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        if (action != null) TextButton(onClick = action) { Text("Settings") }
+    }
+}
+
+@Composable private fun Servers(list: List<ServerProfile>, add: () -> Unit, open: (ServerProfile) -> Unit, delete: (ServerProfile) -> Unit, settings: () -> Unit) {
+    Column(Modifier.fillMaxSize()) { Bar("File Server", action = settings)
+        LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
+            if (list.isEmpty()) item { Text("No servers yet. Add one to get started.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            items(list, key = { it.id }) { p -> Card(onClick = { open(p) }, modifier = Modifier.fillMaxWidth().height(112.dp), shape = RoundedCornerShape(16.dp), border = ButtonDefaults.outlinedButtonBorder) { Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Text("F", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge) }; Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(p.displayName, style = MaterialTheme.typography.titleMedium); Text(p.endpoint, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(6.dp)); Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondary) { Text("Online", color = Color.White, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) } }; TextButton(onClick = { delete(p) }) { Text("Delete") } } } }
         }
+        Button(onClick = add, modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp), shape = RoundedCornerShape(18.dp)) { Text("+  Add server") }
     }
 }
 
-private enum class AppScreen { Servers, Add, Login, Browser, Transfers, Settings }
+@Composable private fun Add(back: () -> Unit, save: (String, String) -> Unit) { var url by remember { mutableStateOf("") }; var name by remember { mutableStateOf("") }; var error by remember { mutableStateOf<String?>(null) }; Column(Modifier.fillMaxSize()) { Bar("Add server", back); Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { OutlinedTextField(url, { value -> url = value; error = null }, label = { Text("Server address") }, placeholder = { Text("http://192.168.1.10:8080") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp)); OutlinedTextField(name, { value -> name = value }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp)); error?.let { Text(it, color = MaterialTheme.colorScheme.error) }; Button(onClick = { Endpoint.normalize(url).fold({ save(url, name) }, { cause -> error = cause.message ?: "Invalid URL" }) }, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(18.dp)) { Text("Save server") } } } }
 
-@Composable
-private fun ServersScreen(profiles: List<ServerProfile>, onAdd: () -> Unit, onOpen: (ServerProfile) -> Unit, onDelete: (ServerProfile) -> Unit) {
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Your servers", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
-        if (profiles.isEmpty()) Text("Add a File Browser server to get started")
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.weight(1f)) {
-            items(profiles, key = { it.id }) { profile ->
-                Card(onClick = { onOpen(profile) }, modifier = Modifier.fillMaxWidth()) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Column { Text(profile.displayName, style = androidx.compose.material3.MaterialTheme.typography.titleMedium); Text(profile.endpoint) }
-                        TextButton(onClick = { onDelete(profile) }) { Text("Delete") }
-                    }
-                }
-            }
-        }
-        Button(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Text("Add server") }
-    }
-}
+@Composable private fun Login(profile: ServerProfile?, back: () -> Unit, connected: (String?) -> Unit) { var user by remember { mutableStateOf("") }; var pass by remember { mutableStateOf("") }; var error by remember { mutableStateOf<String?>(null) }; var busy by remember { mutableStateOf(false) }; val scope = rememberCoroutineScope(); Column(Modifier.fillMaxSize()) { Bar("Sign in", back); Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) { Spacer(Modifier.height(16.dp)); Box(Modifier.size(88.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(24.dp)), contentAlignment = Alignment.Center) { Text("F", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.primary) }; Text(profile?.displayName ?: "Server", style = MaterialTheme.typography.headlineMedium); Text(profile?.endpoint ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(8.dp)); OutlinedTextField(user, { value -> user = value }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp)); OutlinedTextField(pass, { value -> pass = value }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp)); error?.let { Text(it, color = MaterialTheme.colorScheme.error) }; Button(onClick = { if (profile != null) { busy = true; scope.launch { val result = withContext(Dispatchers.IO) { FileBrowserClient().login(profile, user, pass) }; busy = false; result.onSuccess { connected(it) }.onFailure { cause -> error = cause.message } } } }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(18.dp)) { Text(if (busy) "Connecting..." else "Sign in") } } } }
 
-@Composable
-private fun AddServerScreen(onCancel: () -> Unit, onSave: (String, String) -> Unit) {
-    var endpoint by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Add server", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
-        OutlinedTextField(endpoint, { endpoint = it; error = null }, label = { Text("Server URL") }, placeholder = { Text("http://192.168.1.10:8080") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(name, { name = it }, label = { Text("Display name (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(onClick = onCancel) { Text("Cancel") }
-            Button(onClick = { Endpoint.normalize(endpoint).fold({ onSave(endpoint, name) }, { error = it.message ?: "Invalid URL" }) }) { Text("Save") }
-        }
-    }
-}
+@Composable private fun Browser(profile: ServerProfile?, token: String?, back: () -> Unit) { var data by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }; var error by remember { mutableStateOf<String?>(null) }; LaunchedEffect(profile, token) { if (profile != null) FileBrowserClient().list(profile, token).onSuccess { data = it }.onFailure { cause -> error = cause.message } }; Column(Modifier.fillMaxSize()) { Bar(profile?.displayName ?: "Files", back); Text(profile?.basePath ?: "/", modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant); Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text("List", fontWeight = FontWeight.Medium); Text("Name up   ${data.size} items", color = MaterialTheme.colorScheme.onSurfaceVariant) }; error?.let { cause -> Text("Connection failed: $cause", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp)) }; LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { items(data, key = { it.path }) { item -> Card(modifier = Modifier.fillMaxWidth().height(72.dp), shape = RoundedCornerShape(12.dp)) { Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (item.isDirectory) "[ ]" else "file", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(item.name, style = MaterialTheme.typography.titleMedium); Text(if (item.isDirectory) "Folder" else "${item.size} B", color = MaterialTheme.colorScheme.onSurfaceVariant) } } } } } } }
 
-@Composable
-private fun LoginScreen(profile: ServerProfile?, onConnected: (String?) -> Unit) {
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Connect to ${profile?.displayName ?: "Server"}", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
-        if (profile?.scheme == "http") Text("HTTP is unencrypted. Continue only on your trusted home network.", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
-        Text("Credentials are used only for this connection and are never logged.")
-        OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
-        error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
-        Button(onClick = {
-            if (profile == null) return@Button
-            busy = true; error = null
-            scope.launch {
-                val result = withContext(Dispatchers.IO) { FileBrowserClient().login(profile, username, password) }
-                busy = false
-                result.onSuccess { onConnected(it) }.onFailure { error = it.message ?: "Sign in failed" }
-            }
-        }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Connecting…" else "Sign in") }
-    }
-}
-
-@Composable
-private fun BrowserScreen(profile: ServerProfile?, token: String?, onBack: () -> Unit) {
-    var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(profile) {
-        if (profile != null) {
-            val result = withContext(Dispatchers.IO) { FileBrowserClient().list(profile, token) }
-            result.onSuccess { resources = it }.onFailure { error = it.message }
-        }
-    }
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(profile?.displayName ?: "Files", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium)
-        Text(profile?.basePath ?: "/")
-        Divider()
-        error?.let { Text("Could not connect: $it", color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
-        if (resources.isEmpty() && error == null) Text("Loading files…")
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(resources, key = { it.path }) { item ->
-                Card(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(if (item.isDirectory) "▣ ${item.name}" else item.name); Text(if (item.isDirectory) "Folder" else "${item.size} B") } }
-            }
-        }
-        TextButton(onClick = onBack) { Text("Back to servers") }
-    }
-}
-
-@Composable
-private fun EmptyFeatureScreen(title: String, message: String) {
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = androidx.compose.material3.MaterialTheme.typography.headlineMedium); Text(message) }
-}
+@Composable private fun Placeholder(title: String, back: () -> Unit) { Column(Modifier.fillMaxSize()) { Bar(title, back); Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Feature in progress", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
