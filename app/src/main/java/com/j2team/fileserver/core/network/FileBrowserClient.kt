@@ -2,6 +2,7 @@ package com.j2team.fileserver.core.network
 
 import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
+import com.j2team.fileserver.core.session.ApiResult
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -104,19 +105,25 @@ class FileBrowserClient {
         connection.inputStream.bufferedReader().use { it.readText().trim('"', '\n', ' ') }
     }
 
-    fun list(profile: ServerProfile, token: String? = null, path: String = "/"): Result<List<RemoteResource>> = runCatching {
+    fun list(profile: ServerProfile, token: String? = null, path: String = "/"): Result<List<RemoteResource>> =
+        listResult(profile, token, path).toResult()
+
+    fun listResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<List<RemoteResource>> = try {
         val url = profile.endpoint.trimEnd('/') + "/api/resources" + if (path.startsWith("/")) path else "/$path"
         val connection = open(url, "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
-        require(connection.responseCode in 200..299) { "Unable to list files (${connection.responseCode})" }
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Unable to list files ($code)"))
         val body = connection.inputStream.bufferedReader().use { it.readText() }
         val array = if (body.trimStart().startsWith("[")) JSONArray(body) else JSONObject(body).optJSONArray("items") ?: JSONArray()
-        buildList {
+        ApiResult(code, buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
                 add(RemoteResource(item.optString("name"), item.optString("path", path), item.optBoolean("isDir"), item.optLong("size")))
             }
-        }
+        })
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     fun rawUrl(profile: ServerProfile, remotePath: String): String =

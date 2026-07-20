@@ -37,6 +37,9 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.network.Endpoint
 import com.j2team.fileserver.core.network.FileBrowserClient
+import com.j2team.fileserver.core.session.EncryptedSecretStore
+import com.j2team.fileserver.core.session.LoginRequiredException
+import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.FileServerTheme
 import com.j2team.fileserver.feature.browser.BrowserPath
 import com.j2team.fileserver.feature.preview.PreviewKind
@@ -67,6 +70,7 @@ class MainActivity : ComponentActivity() {
                 serverStore = ServerStore(this),
                 settingsStore = SettingsStore(this),
                 transferStore = TransferStore(this),
+                sessionRepository = SessionRepository(EncryptedSecretStore(applicationContext), FileBrowserClient()),
             )
         }
     }
@@ -79,6 +83,7 @@ private fun FileServerApp(
     serverStore: ServerStore,
     settingsStore: SettingsStore,
     transferStore: TransferStore,
+    sessionRepository: SessionRepository,
 ) {
     var settings by remember { mutableStateOf(settingsStore.read()) }
     val dark = when (settings.theme) {
@@ -91,14 +96,38 @@ private fun FileServerApp(
         var profiles by remember { mutableStateOf(serverStore.all()) }
         var selected by remember { mutableStateOf<ServerProfile?>(null) }
         var token by remember { mutableStateOf<String?>(null) }
+        var connectionError by remember { mutableStateOf<String?>(null) }
+        val scope = rememberCoroutineScope()
 
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             when (screen) {
                 Screen.Servers -> ServersScreen(
                     profiles = profiles,
                     onAdd = { screen = Screen.AddServer },
-                    onOpen = { selected = it; screen = Screen.Login },
-                    onDelete = { serverStore.delete(it.id); profiles = serverStore.all() },
+                    error = connectionError,
+                    onOpen = { profile ->
+                        connectionError = null
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) { sessionRepository.open(profile) }
+                            result.onSuccess {
+                                selected = it.profile
+                                token = it.token
+                                screen = Screen.Browser
+                            }.onFailure {
+                                if (it is LoginRequiredException) {
+                                    selected = profile
+                                    screen = Screen.Login
+                                } else {
+                                    connectionError = it.message
+                                }
+                            }
+                        }
+                    },
+                    onDelete = {
+                        sessionRepository.clear(it.id)
+                        serverStore.delete(it.id)
+                        profiles = serverStore.all()
+                    },
                     onSettings = { screen = Screen.Settings },
                 )
                 Screen.AddServer -> AddServerScreen(
@@ -113,6 +142,7 @@ private fun FileServerApp(
                 )
                 Screen.Login -> LoginScreen(
                     profile = selected,
+                    sessionRepository = sessionRepository,
                     onBack = { screen = Screen.Servers },
                     onConnected = { token = it; screen = Screen.Browser },
                 )
@@ -160,6 +190,7 @@ private fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Compos
 @Composable
 private fun ServersScreen(
     profiles: List<ServerProfile>,
+    error: String?,
     onAdd: () -> Unit,
     onOpen: (ServerProfile) -> Unit,
     onDelete: (ServerProfile) -> Unit,
@@ -178,6 +209,7 @@ private fun ServersScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 16.dp),
             )
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (profiles.isEmpty()) item { Text(stringResource(R.string.server_empty), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(profiles, key = { it.id }) { profile ->
@@ -258,7 +290,12 @@ private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit
 }
 
 @Composable
-private fun LoginScreen(profile: ServerProfile?, onBack: () -> Unit, onConnected: (String?) -> Unit) {
+private fun LoginScreen(
+    profile: ServerProfile?,
+    sessionRepository: SessionRepository,
+    onBack: () -> Unit,
+    onConnected: (String?) -> Unit,
+) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -281,9 +318,11 @@ private fun LoginScreen(profile: ServerProfile?, onBack: () -> Unit, onConnected
                     val current = profile ?: return@Button
                     busy = true
                     scope.launch {
-                        val result = withContext(Dispatchers.IO) { FileBrowserClient().login(current, username, password) }
+                        val result = withContext(Dispatchers.IO) {
+                            sessionRepository.login(current, username, password.toCharArray())
+                        }
                         busy = false
-                        result.onSuccess(onConnected).onFailure { error = it.message }
+                        result.onSuccess { onConnected(it.token) }.onFailure { error = it.message }
                     }
                 },
                 enabled = !busy && username.isNotBlank() && password.isNotBlank(),
