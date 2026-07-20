@@ -28,7 +28,7 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onTransfers: () ->
     val directoryPermissionError = stringResource(R.string.download_directory_permission_error)
     val directoryPicker = rememberLauncherForActivityResult(PersistableTreeContract()) { selection ->
         if (selection != null) {
-            val persisted = selection.grantFlags != 0 && runCatching {
+            val persisted = acceptsDownloadTreeGrant(selection.grantFlags) && runCatching {
                 context.contentResolver.takePersistableUriPermission(selection.uri, selection.grantFlags)
             }.isSuccess
             if (persisted) {

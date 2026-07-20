@@ -1,6 +1,9 @@
 package com.j2team.fileserver.feature.settings
 
+import android.content.Intent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SettingsCodecTest {
@@ -41,5 +44,13 @@ class SettingsCodecTest {
         val persisted = AppSettings(language = AppLanguage.English, folderIconSet = FolderIconSet.Outline)
 
         assertEquals(persisted, resolvePersistedSettings(persisted.toPersistedJson(), legacy))
+    }
+
+    @Test fun rejectsReadOnlyTreeGrant() {
+        assertFalse(acceptsDownloadTreeGrant(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+    }
+
+    @Test fun acceptsTreeGrantWithWritePermission() {
+        assertTrue(acceptsDownloadTreeGrant(Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
     }
 }

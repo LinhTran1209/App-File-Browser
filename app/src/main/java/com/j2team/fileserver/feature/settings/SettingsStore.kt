@@ -7,6 +7,8 @@ enum class SortOrder { Name, Modified, Size }
 enum class AppLanguage(val languageTag: String) { Vietnamese("vi"), English("en") }
 enum class FolderIconSet { Classic, Color, Outline }
 
+private const val WRITE_URI_PERMISSION_GRANT = 0x00000002
+
 data class AppSettings(
     val theme: AppTheme = AppTheme.System,
     val sortOrder: SortOrder = SortOrder.Name,
@@ -74,6 +76,9 @@ fun decodeSettings(json: String): AppSettings = AppSettings(
 
 fun resolvePersistedSettings(persistedJson: String?, legacy: AppSettings): AppSettings =
     persistedJson?.takeIf(::isCompleteSettingsJson)?.let(::decodeSettings) ?: legacy
+
+fun acceptsDownloadTreeGrant(grantFlags: Int): Boolean =
+    grantFlags and WRITE_URI_PERMISSION_GRANT != 0
 
 private fun isCompleteSettingsJson(json: String): Boolean =
     json.trim().let { value ->
