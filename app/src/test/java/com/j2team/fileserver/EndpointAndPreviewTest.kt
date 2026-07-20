@@ -1,9 +1,11 @@
 Exit code: 0
-Wall time: 0.8 seconds
+Wall time: 0.6 seconds
 Output:
 package com.j2team.fileserver
 
 import com.j2team.fileserver.core.network.Endpoint
+import com.j2team.fileserver.core.network.FileBrowserClient
+import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.feature.preview.PreviewKind
 import com.j2team.fileserver.feature.preview.PreviewRouter
 import org.junit.Assert.assertEquals
@@ -21,6 +23,21 @@ class EndpointAndPreviewTest {
         assertEquals(PreviewKind.Image, PreviewRouter.kind("photo.webp"))
         assertEquals(PreviewKind.Video, PreviewRouter.kind("clip.mp4"))
         assertEquals(PreviewKind.Text, PreviewRouter.kind("notes.md"))
+    }
+
+    @Test fun rawResourceUrlEncodesPathSegments() {
+        val profile = ServerProfile(
+            id = "pi",
+            displayName = "Pi",
+            scheme = "http",
+            host = "192.168.10.37",
+            port = 8888,
+            basePath = "/",
+        )
+        assertEquals(
+            "http://192.168.10.37:8888/api/raw/Media/My%20Video.mp4",
+            FileBrowserClient().rawUrl(profile, "/Media/My Video.mp4"),
+        )
     }
 }
 
