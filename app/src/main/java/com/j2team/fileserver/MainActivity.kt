@@ -3,11 +3,13 @@ package com.j2team.fileserver
 import android.graphics.BitmapFactory
 import android.app.LocaleManager
 import android.content.Context
+import android.content.ContentResolver
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
 import android.os.LocaleList
+import android.provider.DocumentsContract
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.activity.ComponentActivity
@@ -61,6 +63,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -372,6 +375,8 @@ private fun BrowserScreen(
     var path by remember { mutableStateOf(profile?.basePath ?: "/") }
     var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var downloadError by remember { mutableStateOf<String?>(null) }
+    val downloadDirectoryUnavailable = stringResource(R.string.download_directory_unavailable)
     var loading by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<RemoteResource?>(null) }
 
@@ -430,6 +435,7 @@ private fun BrowserScreen(
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(stringResource(R.string.connection_failed, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+        downloadError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             items(resources, key = { it.path }) { item ->
                 FileRow(
@@ -439,13 +445,30 @@ private fun BrowserScreen(
                     onDownload = {
                         if (profile != null) {
                             scope.launch {
-                                val destination = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), item.name)
                                 val task = transferStore.enqueue(item.name, item.path, TransferDirection.Download, item.size)
+                                val treeUri = settings.downloadTreeUri
+                                val destination = if (treeUri == null) {
+                                    File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), item.name)
+                                } else {
+                                    File(context.cacheDir, "download-${task.id}")
+                                }
+                                downloadError = null
                                 transferStore.update(task.id, 0, TransferState.Running)
-                                withContext(Dispatchers.IO) {
+                                val downloaded = withContext(Dispatchers.IO) {
                                     sessionRepository.download(profile, item.path, destination) { read, _ -> transferStore.update(task.id, read, TransferState.Running) }
-                                }.onSuccess { transferStore.update(task.id, item.size, TransferState.Completed) }
-                                    .onFailure { transferStore.update(task.id, 0, TransferState.Failed, it.message) }
+                                }
+                                downloaded.onSuccess { file ->
+                                    val saved = treeUri?.let { selectedTree ->
+                                        withContext(Dispatchers.IO) { runCatching { copyToDownloadTree(context.contentResolver, selectedTree, file, item.name) } }
+                                    } ?: Result.success(Unit)
+                                    saved.onSuccess {
+                                        transferStore.update(task.id, item.size, TransferState.Completed)
+                                    }.onFailure {
+                                        transferStore.update(task.id, 0, TransferState.Failed, it.message)
+                                        downloadError = downloadDirectoryUnavailable
+                                    }
+                                    if (treeUri != null) file.delete()
+                                }.onFailure { transferStore.update(task.id, 0, TransferState.Failed, it.message) }
                             }
                         }
                     },
@@ -607,4 +630,20 @@ private fun folderIconResource(set: FolderIconSet): Int = when (set) {
     FolderIconSet.Classic -> AppIcons.FolderClassic
     FolderIconSet.Color -> AppIcons.FolderColor
     FolderIconSet.Outline -> AppIcons.FolderOutline
+}
+
+private fun copyToDownloadTree(resolver: ContentResolver, treeUri: String, source: File, name: String) {
+    val tree = Uri.parse(treeUri)
+    val treeDocument = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+    var destination: Uri? = null
+    try {
+        destination = DocumentsContract.createDocument(resolver, treeDocument, "application/octet-stream", name)
+            ?: throw IOException("Provider did not create destination")
+        resolver.openOutputStream(destination, "w")?.use { output ->
+            source.inputStream().use { input -> input.copyTo(output) }
+        } ?: throw IOException("Provider did not open destination")
+    } catch (error: Throwable) {
+        destination?.let { runCatching { DocumentsContract.deleteDocument(resolver, it) } }
+        throw error
+    }
 }

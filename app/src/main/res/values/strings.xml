@@ -44,4 +44,7 @@
     <string name="grid">Lưới</string>
     <string name="show_password">Hiện mật khẩu</string>
     <string name="hide_password">Ẩn mật khẩu</string>
+    <string name="app_version">Ứng dụng Android • v%1$s</string>
+    <string name="download_directory_permission_error">Không thể dùng thư mục đã chọn. Hãy cấp lại quyền thư mục.</string>
+    <string name="download_directory_unavailable">Không thể lưu vào thư mục tải xuống đã chọn. Hãy chọn lại thư mục trong Cài đặt.</string>
 </resources>

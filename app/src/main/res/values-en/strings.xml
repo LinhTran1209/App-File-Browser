@@ -44,4 +44,7 @@
     <string name="grid">Grid</string>
     <string name="show_password">Show password</string>
     <string name="hide_password">Hide password</string>
+    <string name="app_version">Android native • v%1$s</string>
+    <string name="download_directory_permission_error">The selected folder cannot be used. Grant folder access again.</string>
+    <string name="download_directory_unavailable">The selected download folder is unavailable. Choose it again in Settings.</string>
 </resources>

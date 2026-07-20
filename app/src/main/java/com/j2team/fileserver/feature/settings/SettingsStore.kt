@@ -20,13 +20,16 @@ data class AppSettings(
 
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
-    fun read(): AppSettings = prefs.getString(SETTINGS_JSON, null)?.let(::decodeSettings) ?: AppSettings(
-        theme = enumValue(prefs.getString("theme", AppTheme.System.name), AppTheme.System),
-        sortOrder = enumValue(prefs.getString("sort", SortOrder.Name.name), SortOrder.Name),
-        ascending = prefs.getBoolean("ascending", true),
-        gridView = prefs.getBoolean("grid", false),
-        showHiddenFiles = prefs.getBoolean("hidden", false),
-    )
+    fun read(): AppSettings {
+        val legacy = AppSettings(
+            theme = enumValue(prefs.getString("theme", AppTheme.System.name), AppTheme.System),
+            sortOrder = enumValue(prefs.getString("sort", SortOrder.Name.name), SortOrder.Name),
+            ascending = prefs.getBoolean("ascending", true),
+            gridView = prefs.getBoolean("grid", false),
+            showHiddenFiles = prefs.getBoolean("hidden", false),
+        )
+        return resolvePersistedSettings(prefs.getString(SETTINGS_JSON, null), legacy)
+    }
 
     fun save(settings: AppSettings) {
         prefs.edit().putString(SETTINGS_JSON, settings.toPersistedJson()).apply()
@@ -69,6 +72,19 @@ fun decodeSettings(json: String): AppSettings = AppSettings(
     folderIconSet = enumValue(json.jsonString("folderIconSet"), FolderIconSet.Classic),
 )
 
+fun resolvePersistedSettings(persistedJson: String?, legacy: AppSettings): AppSettings =
+    persistedJson?.takeIf(::isCompleteSettingsJson)?.let(::decodeSettings) ?: legacy
+
+private fun isCompleteSettingsJson(json: String): Boolean =
+    json.trim().let { value ->
+        value.startsWith('{') && value.endsWith('}') &&
+            value.jsonString("theme") != null &&
+            value.jsonString("sortOrder") != null &&
+            value.jsonBooleanOrNull("ascending") != null &&
+            value.jsonBooleanOrNull("gridView") != null &&
+            value.jsonBooleanOrNull("showHiddenFiles") != null
+    }
+
 private inline fun <reified T : Enum<T>> enumValue(value: String?, default: T): T =
     value?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
 
@@ -106,4 +122,7 @@ private fun String.jsonString(name: String): String? {
 }
 
 private fun String.jsonBoolean(name: String, default: Boolean): Boolean =
-    Regex("\\\"${Regex.escape(name)}\\\"\\s*:\\s*(true|false)").find(this)?.groupValues?.get(1)?.toBoolean() ?: default
+    jsonBooleanOrNull(name) ?: default
+
+private fun String.jsonBooleanOrNull(name: String): Boolean? =
+    Regex("\\\"${Regex.escape(name)}\\\"\\s*:\\s*(true|false)").find(this)?.groupValues?.get(1)?.toBoolean()
