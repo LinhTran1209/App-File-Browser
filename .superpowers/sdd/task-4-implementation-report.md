@@ -42,3 +42,5 @@ Remaining concerns:
 
 - SAF provider operations are still exercised through `DocumentFile` directly; a provider-operations abstraction with failure-injection tests for every rename/delete/restore partial failure was not added in `9c0b43c`. Providers that fail restore still preserve the backup name as the recovery artifact, but the UI does not yet surface a dedicated recovery-path affordance.
 - `SessionRepository`'s mutable in-memory token map was not changed to a concurrent map/mutex in this follow-up. The process-wide transfer runtime can invoke it concurrently, so this remains a follow-up hardening item.
+
+Final SAF follow-up: `4d74280` adds a per-attempt UUID backup name, only deletes backups created by that attempt, verifies cleanup/restore outcomes and retains a named recovery backup on partial failure. `SessionRepository` now uses `ConcurrentHashMap`. Focused `TransferReliabilityTest` passed; full verification should be repeated by the integrating task.
