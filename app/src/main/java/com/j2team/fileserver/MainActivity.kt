@@ -3,10 +3,20 @@ Wall time: 0.5 seconds
 Output:
 package com.j2team.fileserver
 
+import android.graphics.BitmapFactory
+import android.content.Context
+import android.content.res.Configuration
+import android.net.Uri
 import android.os.Bundle
+import android.widget.MediaController
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,82 +26,511 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.j2team.fileserver.core.model.*
-import com.j2team.fileserver.core.network.*
+import androidx.compose.ui.viewinterop.AndroidView
+import com.j2team.fileserver.core.model.RemoteResource
+import com.j2team.fileserver.core.model.ServerProfile
+import com.j2team.fileserver.core.network.Endpoint
+import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.ui.FileServerTheme
+import com.j2team.fileserver.feature.browser.BrowserPath
+import com.j2team.fileserver.feature.preview.PreviewKind
+import com.j2team.fileserver.feature.preview.PreviewRouter
 import com.j2team.fileserver.feature.servers.ServerStore
+import com.j2team.fileserver.feature.settings.AppSettings
+import com.j2team.fileserver.feature.settings.AppTheme
+import com.j2team.fileserver.feature.settings.SettingsStore
+import com.j2team.fileserver.feature.transfers.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.Locale
 
-class MainActivity : ComponentActivity() { override fun onCreate(state: Bundle?) { super.onCreate(state); setContent { Shell(ServerStore(this)) } } }
-private enum class Screen { Servers, Add, Login, Browser, Transfers, Settings }
-
-@Composable private fun Shell(store: ServerStore) {
-    var profiles by remember { mutableStateOf(store.all()) }
-    var screen by remember { mutableStateOf(Screen.Servers) }
-    var selected by remember { mutableStateOf<ServerProfile?>(null) }
-    var token by remember { mutableStateOf<String?>(null) }
-    FileServerTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) { when (screen) {
-        Screen.Servers -> Servers(profiles, { screen = Screen.Add }, { selected = it; screen = Screen.Login }, { store.delete(it.id); profiles = store.all() }, { screen = Screen.Settings })
-        Screen.Add -> Add({ screen = Screen.Servers }) { raw, name -> Endpoint.normalize(raw).fold({ e -> store.create(name.ifBlank { "File Server" }, e.scheme, e.host, e.port, e.basePath); profiles = store.all(); screen = Screen.Servers }, { }) }
-        Screen.Login -> Login(selected, { screen = Screen.Servers }) { token = it; screen = Screen.Browser }
-        Screen.Browser -> Browser(selected, token) { screen = Screen.Servers }
-        Screen.Transfers -> TransfersScreen { screen = Screen.Servers }
-        Screen.Settings -> SettingsScreen({ screen = Screen.Servers }, { screen = Screen.Transfers })
-    } } }
-}
-
-@Composable private fun Bar(title: String, back: (() -> Unit)? = null, action: (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (back != null) TextButton(onClick = back, contentPadding = PaddingValues(0.dp)) { Text("<", style = MaterialTheme.typography.headlineMedium) }
-        Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.titleLarge); if (back == null) Text("Your servers", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (action != null) TextButton(onClick = action) { Text("Settings") }
-    }
-}
-
-@Composable private fun Servers(list: List<ServerProfile>, add: () -> Unit, open: (ServerProfile) -> Unit, delete: (ServerProfile) -> Unit, settings: () -> Unit) {
-    Column(Modifier.fillMaxSize()) { Bar("File Server", action = settings)
-        LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-            if (list.isEmpty()) item { Text("No servers yet. Add one to get started.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            items(list, key = { it.id }) { p -> Card(onClick = { open(p) }, modifier = Modifier.fillMaxWidth().height(112.dp), shape = RoundedCornerShape(16.dp), border = ButtonDefaults.outlinedButtonBorder) { Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Text("F", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge) }; Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(p.displayName, style = MaterialTheme.typography.titleMedium); Text(p.endpoint, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(6.dp)); Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondary) { Text("Online", color = Color.White, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) } }; TextButton(onClick = { delete(p) }) { Text("Delete") } } } }
+class MainActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) {
+        val config = Configuration(newBase.resources.configuration).apply {
+            setLocale(Locale.forLanguageTag("vi"))
         }
-        Button(onClick = add, modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp), shape = RoundedCornerShape(18.dp)) { Text("+  Add server") }
+        super.attachBaseContext(newBase.createConfigurationContext(config))
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            FileServerApp(
+                serverStore = ServerStore(this),
+                settingsStore = SettingsStore(this),
+                transferStore = TransferStore(this),
+            )
+        }
     }
 }
 
-@Composable private fun Add(back: () -> Unit, save: (String, String) -> Unit) { var url by remember { mutableStateOf("") }; var name by remember { mutableStateOf("") }; var error by remember { mutableStateOf<String?>(null) }; Column(Modifier.fillMaxSize()) { Bar("Add server", back); Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { OutlinedTextField(url, { value -> url = value; error = null }, label = { Text("Server address") }, placeholder = { Text("http://192.168.1.10:8080") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp)); OutlinedTextField(name, { value -> name = value }, label = { Text("Display name") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp)); error?.let { Text(it, color = MaterialTheme.colorScheme.error) }; Button(onClick = { Endpoint.normalize(url).fold({ save(url, name) }, { cause -> error = cause.message ?: "Invalid URL" }) }, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(18.dp)) { Text("Save server") } } } }
+private enum class Screen { Servers, AddServer, Login, Browser, Transfers, Settings }
 
-@Composable private fun Login(profile: ServerProfile?, back: () -> Unit, connected: (String?) -> Unit) { var user by remember { mutableStateOf("") }; var pass by remember { mutableStateOf("") }; var error by remember { mutableStateOf<String?>(null) }; var busy by remember { mutableStateOf(false) }; val scope = rememberCoroutineScope(); Column(Modifier.fillMaxSize()) { Bar("Sign in", back); Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) { Spacer(Modifier.height(16.dp)); Box(Modifier.size(88.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(24.dp)), contentAlignment = Alignment.Center) { Text("F", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.primary) }; Text(profile?.displayName ?: "Server", style = MaterialTheme.typography.headlineMedium); Text(profile?.endpoint ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(8.dp)); OutlinedTextField(user, { value -> user = value }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp)); OutlinedTextField(pass, { value -> pass = value }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp)); error?.let { Text(it, color = MaterialTheme.colorScheme.error) }; Button(onClick = { if (profile != null) { busy = true; scope.launch { val result = withContext(Dispatchers.IO) { FileBrowserClient().login(profile, user, pass) }; busy = false; result.onSuccess { connected(it) }.onFailure { cause -> error = cause.message } } } }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(18.dp)) { Text(if (busy) "Connecting..." else "Sign in") } } } }
-
-@Composable private fun Browser(profile: ServerProfile?, token: String?, back: () -> Unit) {
-    var path by remember { mutableStateOf("/") }
-    var data by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var preview by remember { mutableStateOf<RemoteResource?>(null) }
-    LaunchedEffect(profile, token, path) { if (profile != null) FileBrowserClient().list(profile, token, path).onSuccess { data = it; error = null }.onFailure { cause -> error = cause.message } }
-    if (preview != null) {
-        Column(Modifier.fillMaxSize().background(Color(0xFF030712))) { Bar(preview!!.name, { preview = null }); Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Preview is ready for streaming", color = Color.White) } }
-        return
+@Composable
+private fun FileServerApp(
+    serverStore: ServerStore,
+    settingsStore: SettingsStore,
+    transferStore: TransferStore,
+) {
+    var settings by remember { mutableStateOf(settingsStore.read()) }
+    val dark = when (settings.theme) {
+        AppTheme.System -> androidx.compose.foundation.isSystemInDarkTheme()
+        AppTheme.Light -> false
+        AppTheme.Dark -> true
     }
+    FileServerTheme(darkTheme = dark) {
+        var screen by remember { mutableStateOf(Screen.Servers) }
+        var profiles by remember { mutableStateOf(serverStore.all()) }
+        var selected by remember { mutableStateOf<ServerProfile?>(null) }
+        var token by remember { mutableStateOf<String?>(null) }
+
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            when (screen) {
+                Screen.Servers -> ServersScreen(
+                    profiles = profiles,
+                    onAdd = { screen = Screen.AddServer },
+                    onOpen = { selected = it; screen = Screen.Login },
+                    onDelete = { serverStore.delete(it.id); profiles = serverStore.all() },
+                    onSettings = { screen = Screen.Settings },
+                )
+                Screen.AddServer -> AddServerScreen(
+                    onBack = { screen = Screen.Servers },
+                    onSave = { raw, name ->
+                        Endpoint.normalize(raw).onSuccess {
+                            serverStore.create(name.ifBlank { "${it.host}:${it.port}" }, it.scheme, it.host, it.port, it.basePath)
+                            profiles = serverStore.all()
+                            screen = Screen.Servers
+                        }
+                    },
+                )
+                Screen.Login -> LoginScreen(
+                    profile = selected,
+                    onBack = { screen = Screen.Servers },
+                    onConnected = { token = it; screen = Screen.Browser },
+                )
+                Screen.Browser -> BrowserScreen(
+                    profile = selected,
+                    token = token,
+                    settings = settings,
+                    transferStore = transferStore,
+                    onBack = { screen = Screen.Servers },
+                    onTransfers = { screen = Screen.Transfers },
+                )
+                Screen.Transfers -> TransfersScreen(transferStore) { screen = Screen.Browser }
+                Screen.Settings -> SettingsScreen(
+                    settings = settings,
+                    onBack = { screen = Screen.Servers },
+                    onTransfers = { screen = Screen.Transfers },
+                    onChanged = {
+                        settings = it
+                        settingsStore.save(it)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Composable () -> Unit)? = null) {
+    Surface(color = MaterialTheme.colorScheme.surface) {
+        Row(
+            Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (onBack != null) {
+                TextButton(onClick = onBack, modifier = Modifier.size(48.dp), contentPadding = PaddingValues(0.dp)) {
+                    Text("â€¹", style = MaterialTheme.typography.headlineMedium)
+                }
+            }
+            Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            action?.invoke()
+        }
+    }
+}
+
+@Composable
+private fun ServersScreen(
+    profiles: List<ServerProfile>,
+    onAdd: () -> Unit,
+    onOpen: (ServerProfile) -> Unit,
+    onDelete: (ServerProfile) -> Unit,
+    onSettings: () -> Unit,
+) {
     Column(Modifier.fillMaxSize()) {
-        Bar(profile?.displayName ?: "Files", back)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { if (path != "/") TextButton(onClick = { path = path.substringBeforeLast('/', "/").ifBlank { "/" } }) { Text("Up") }; Text(path, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text("List", fontWeight = FontWeight.Medium); Text("Name up   ${data.size} items", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        error?.let { cause -> Text("Connection failed: $cause", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp)) }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            items(data, key = { it.path }) { item ->
-                Card(onClick = { if (item.isDirectory) path = item.path else preview = item }, modifier = Modifier.fillMaxWidth().height(72.dp), shape = RoundedCornerShape(12.dp)) {
-                    Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Text(if (item.isDirectory) "[ ]" else "file", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleLarge); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(item.name, style = MaterialTheme.typography.titleMedium); Text(if (item.isDirectory) "Folder" else "${item.size} B", color = MaterialTheme.colorScheme.onSurfaceVariant) }; Text(if (item.isDirectory) ">" else "â‹®") }
+        AppBar(stringResource(R.string.app_name), action = {
+            IconButton(onClick = onSettings, modifier = Modifier.size(48.dp)) {
+                Icon(painterResource(R.drawable.settings_icon), contentDescription = stringResource(R.string.settings), tint = Color.Unspecified)
+            }
+        })
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            Text(
+                stringResource(R.string.your_servers),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 16.dp),
+            )
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (profiles.isEmpty()) item { Text(stringResource(R.string.server_empty), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                items(profiles, key = { it.id }) { profile ->
+                    ServerCard(profile, { onOpen(profile) }, { onDelete(profile) })
+                }
+            }
+            Button(
+                onClick = onAdd,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp).height(56.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) { Text("+  ${stringResource(R.string.add_server)}") }
+        }
+    }
+}
+
+@Composable
+private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(112.dp),
+        shape = RoundedCornerShape(16.dp),
+        border = CardDefaults.outlinedCardBorder(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(48.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(profile.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(profile.endpoint.removeSuffix("/"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            }
+            Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondary) {
+                Text(stringResource(R.string.online), color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+            }
+            Box {
+                TextButton(onClick = { menu = true }, contentPadding = PaddingValues(8.dp)) { Text("â‹®") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; onDelete() })
                 }
             }
         }
     }
 }
 
-@Composable private fun TransfersScreen(back: () -> Unit) { Column(Modifier.fillMaxSize()) { Bar("Transfers", back); Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No active transfers", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
-@Composable private fun SettingsScreen(back: () -> Unit, transfers: () -> Unit) { Column(Modifier.fillMaxSize()) { Bar("Settings", back); Card(Modifier.padding(16.dp).fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) { Column(Modifier.padding(16.dp)) { Text("File Server", style = MaterialTheme.typography.titleMedium); Text("Theme and connection preferences") } }; Button(onClick = transfers, modifier = Modifier.fillMaxWidth().padding(16.dp)) { Text("Open transfers") } } }
+@Composable
+private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit) {
+    var endpoint by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    Column(Modifier.fillMaxSize()) {
+        AppBar(stringResource(R.string.add_server), onBack)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(
+                endpoint, { endpoint = it; error = null },
+                label = { Text(stringResource(R.string.server_address)) },
+                placeholder = { Text("http://192.168.10.37:8888") },
+                modifier = Modifier.fillMaxWidth().height(64.dp), singleLine = true, shape = RoundedCornerShape(12.dp),
+            )
+            OutlinedTextField(
+                name, { name = it },
+                label = { Text(stringResource(R.string.display_name)) },
+                modifier = Modifier.fillMaxWidth().height(64.dp), singleLine = true, shape = RoundedCornerShape(12.dp),
+            )
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Button(
+                onClick = {
+                    Endpoint.normalize(endpoint).fold(
+                        onSuccess = { onSave(endpoint, name) },
+                        onFailure = { error = it.message ?: "URL khÃ´ng há»£p lá»‡" },
+                    )
+                },
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) { Text(stringResource(R.string.save_server)) }
+        }
+    }
+}
+
+@Composable
+private fun LoginScreen(profile: ServerProfile?, onBack: () -> Unit, onConnected: (String?) -> Unit) {
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    Column(Modifier.fillMaxSize()) {
+        AppBar(stringResource(R.string.sign_in), onBack)
+        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Spacer(Modifier.height(20.dp))
+            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(88.dp))
+            Text(profile?.displayName ?: stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
+            Text(profile?.endpoint.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(username, { username = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp))
+            OutlinedTextField(password, { password = it }, label = { Text(stringResource(R.string.password)) }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp))
+            if (profile?.scheme == "http") Text(stringResource(R.string.http_warning), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Button(
+                onClick = {
+                    val current = profile ?: return@Button
+                    busy = true
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) { FileBrowserClient().login(current, username, password) }
+                        busy = false
+                        result.onSuccess(onConnected).onFailure { error = it.message }
+                    }
+                },
+                enabled = !busy && username.isNotBlank() && password.isNotBlank(),
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(18.dp),
+            ) { Text(if (busy) stringResource(R.string.connecting) else stringResource(R.string.sign_in)) }
+        }
+    }
+}
+
+@Composable
+private fun BrowserScreen(
+    profile: ServerProfile?,
+    token: String?,
+    settings: AppSettings,
+    transferStore: TransferStore,
+    onBack: () -> Unit,
+    onTransfers: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val client = remember { FileBrowserClient() }
+    var path by remember { mutableStateOf(profile?.basePath ?: "/") }
+    var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf<RemoteResource?>(null) }
+
+    fun refresh() {
+        val current = profile ?: return
+        loading = true
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { client.list(current, token, path) }
+            loading = false
+            result.onSuccess { list ->
+                resources = list.filter { settings.showHiddenFiles || !it.name.startsWith(".") }
+                    .sortedWith(compareByDescending<RemoteResource> { it.isDirectory }.thenBy { it.name.lowercase() })
+                error = null
+            }.onFailure { error = it.message }
+        }
+    }
+    LaunchedEffect(profile, token, path, settings.showHiddenFiles) { refresh() }
+
+    val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null && profile != null) {
+            scope.launch {
+                val name = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+                } ?: "upload.bin"
+                val temp = File(context.cacheDir, name)
+                withContext(Dispatchers.IO) { context.contentResolver.openInputStream(uri)?.use { input -> temp.outputStream().use(input::copyTo) } }
+                var task = transferStore.enqueue(name, path, TransferDirection.Upload, temp.length())
+                task = transferStore.save(task.copy(state = TransferState.Running))
+                withContext(Dispatchers.IO) {
+                    client.upload(profile, token, path, temp) { sent, total -> transferStore.update(task.id, sent, TransferState.Running) }
+                }.onSuccess { transferStore.update(task.id, task.totalBytes, TransferState.Completed); refresh() }
+                    .onFailure { transferStore.update(task.id, task.transferredBytes, TransferState.Failed, it.message) }
+                temp.delete()
+            }
+        }
+    }
+
+    if (preview != null && profile != null) {
+        PreviewScreen(profile, token, preview!!, transferStore, onBack = { preview = null })
+        return
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        AppBar(profile?.displayName ?: stringResource(R.string.app_name), onBack, action = {
+            TextButton(onClick = onTransfers) { Text("â‡…") }
+        })
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (BrowserPath.normalize(path) != "/") TextButton(onClick = { path = BrowserPath.parent(path) }) { Text("â€¹") }
+            Text(path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            TextButton(onClick = { uploadPicker.launch(arrayOf("*/*")) }) { Text("+ ${stringResource(R.string.upload)}") }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(stringResource(R.string.list), fontWeight = FontWeight.Medium)
+            Text(stringResource(R.string.items_count, resources.size), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        error?.let { Text(stringResource(R.string.connection_failed, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            items(resources, key = { it.path }) { item ->
+                FileRow(
+                    item = item,
+                    onOpen = { if (item.isDirectory) path = item.path else preview = item },
+                    onDownload = {
+                        if (profile != null) {
+                            scope.launch {
+                                val destination = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), item.name)
+                                val task = transferStore.enqueue(item.name, item.path, TransferDirection.Download, item.size)
+                                transferStore.update(task.id, 0, TransferState.Running)
+                                withContext(Dispatchers.IO) {
+                                    client.download(profile, token, item.path, destination) { read, _ -> transferStore.update(task.id, read, TransferState.Running) }
+                                }.onSuccess { transferStore.update(task.id, item.size, TransferState.Completed) }
+                                    .onFailure { transferStore.update(task.id, 0, TransferState.Failed, it.message) }
+                            }
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FileRow(item: RemoteResource, onOpen: () -> Unit, onDownload: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().height(72.dp).clickable(onClick = onOpen),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(40.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(item.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (item.isDirectory) stringResource(R.string.folder) else formatBytes(item.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (item.isDirectory) Text("â€º", style = MaterialTheme.typography.titleLarge)
+            else TextButton(onClick = onDownload, contentPadding = PaddingValues(8.dp)) { Text("â†“") }
+        }
+    }
+}
+
+@Composable
+private fun PreviewScreen(
+    profile: ServerProfile,
+    token: String?,
+    item: RemoteResource,
+    transferStore: TransferStore,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    val client = remember { FileBrowserClient() }
+    val kind = PreviewRouter.kind(item.name)
+    var text by remember { mutableStateOf<String?>(null) }
+    var bitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(item.path) {
+        when (kind) {
+            PreviewKind.Text -> withContext(Dispatchers.IO) { client.readText(profile, token, item.path) }.onSuccess { text = it }.onFailure { error = it.message }
+            PreviewKind.Image -> {
+                val file = File(context.cacheDir, "preview-${item.name.hashCode()}")
+                withContext(Dispatchers.IO) { client.download(profile, token, item.path, file) }
+                    .onSuccess { bitmap = BitmapFactory.decodeFile(it.path)?.asImageBitmap() }
+                    .onFailure { error = it.message }
+            }
+            else -> Unit
+        }
+    }
+    Column(Modifier.fillMaxSize().background(Color(0xFF030712))) {
+        Surface(color = Color(0xFF030712)) { AppBar(item.name, onBack) }
+        Box(Modifier.weight(1f).fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+            when (kind) {
+                PreviewKind.Image -> bitmap?.let { Image(it, item.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) } ?: CircularProgressIndicator()
+                PreviewKind.Text -> Text(text ?: "Äang táº£iâ€¦", color = Color.White, modifier = Modifier.fillMaxSize())
+                PreviewKind.Video, PreviewKind.Audio -> AndroidView(
+                    factory = { ctx ->
+                        VideoView(ctx).apply {
+                            val controller = MediaController(ctx)
+                            controller.setAnchorView(this)
+                            setMediaController(controller)
+                            setVideoURI(Uri.parse(client.rawUrl(profile, item.path)), if (token.isNullOrBlank()) emptyMap() else mapOf("X-Auth" to token))
+                            setOnPreparedListener { start() }
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                PreviewKind.Unsupported -> Text(stringResource(R.string.preview_unsupported), color = Color.White)
+            }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+        Text("${formatBytes(item.size)}  â€¢  ${PreviewRouter.mimeType(item.name)}", color = Color.White, modifier = Modifier.padding(16.dp))
+    }
+}
+
+@Composable
+private fun TransfersScreen(store: TransferStore, onBack: () -> Unit) {
+    var tasks by remember { mutableStateOf(store.all()) }
+    Column(Modifier.fillMaxSize()) {
+        AppBar(stringResource(R.string.transfers), onBack)
+        if (tasks.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(stringResource(R.string.no_transfers), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        else LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(tasks, key = { it.id }) { task ->
+                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row { Text(if (task.direction == TransferDirection.Download) "â†“" else "â†‘"); Spacer(Modifier.width(12.dp)); Text(task.name, modifier = Modifier.weight(1f)); Text(task.state.name) }
+                        LinearProgressIndicator(progress = { task.progress }, modifier = Modifier.fillMaxWidth())
+                        Text("${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (!task.isActive) TextButton(onClick = { store.remove(task.id); tasks = store.all() }) { Text(stringResource(R.string.delete)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    settings: AppSettings,
+    onBack: () -> Unit,
+    onTransfers: () -> Unit,
+    onChanged: (AppSettings) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        AppBar(stringResource(R.string.settings), onBack)
+        Card(
+            Modifier.fillMaxWidth().padding(16.dp).height(96.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        ) {
+            Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Image(painterResource(R.drawable.server_icon), null, Modifier.size(48.dp))
+                Spacer(Modifier.width(12.dp))
+                Column { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium); Text("Android native â€¢ v1.0", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        }
+        Text(stringResource(R.string.theme), fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AppTheme.entries.forEach { theme ->
+                FilterChip(
+                    selected = settings.theme == theme,
+                    onClick = { onChanged(settings.copy(theme = theme)) },
+                    label = { Text(when (theme) { AppTheme.System -> stringResource(R.string.theme_system); AppTheme.Light -> stringResource(R.string.theme_light); AppTheme.Dark -> stringResource(R.string.theme_dark) }) },
+                )
+            }
+        }
+        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.show_hidden), modifier = Modifier.weight(1f))
+            Switch(settings.showHiddenFiles, { onChanged(settings.copy(showHiddenFiles = it)) })
+        }
+        Button(onClick = onTransfers, modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp), shape = RoundedCornerShape(18.dp)) {
+            Text(stringResource(R.string.open_transfers))
+        }
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes < 1_024 -> "$bytes B"
+    bytes < 1_048_576 -> "%.1f KB".format(bytes / 1_024.0)
+    bytes < 1_073_741_824 -> "%.1f MB".format(bytes / 1_048_576.0)
+    else -> "%.1f GB".format(bytes / 1_073_741_824.0)
+}
 
