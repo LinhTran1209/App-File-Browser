@@ -10,6 +10,8 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -65,6 +67,38 @@ class FileBrowserClient {
         ApiResult(-1, error = error)
     }
 
+    /** Streams a download to a caller-owned output stream, allowing SAF destinations without a temporary disk file. */
+    fun downloadToResult(
+        profile: ServerProfile,
+        token: String? = null,
+        remotePath: String,
+        openDestination: () -> OutputStream,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): ApiResult<Unit> = try {
+        require(remotePath.isNotBlank()) { "Remote path is required" }
+        val connection = open(rawUrl(profile, remotePath), "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Download failed ($code)"))
+        val total = connection.contentLengthLong
+        var copied = 0L
+        connection.inputStream.use { input ->
+            openDestination().use { output ->
+                val buffer = ByteArray(8 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    copied += count
+                    onProgress?.invoke(copied, total)
+                }
+            }
+        }
+        ApiResult(code, Unit)
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
     /** Uploads one local file as multipart/form-data to a remote directory. */
     fun upload(
         profile: ServerProfile,
@@ -81,27 +115,12 @@ class FileBrowserClient {
             setRequestProperty("Accept", "application/json")
             if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
         }
-        val prefix = "--$boundary\r\n" +
-            "Content-Disposition: form-data; name=\"file\"; filename=\"${file.name.replace("\"", "")}\"\r\n" +
-            "Content-Type: application/octet-stream\r\n\r\n"
-        val suffix = "\r\n--$boundary--\r\n"
-        val total = prefix.toByteArray().size + file.length() + suffix.toByteArray().size
-        var sent = 0L
+        val total = MultipartEncoder.encodedSize(boundary, file.name, file.length())
+        connection.setFixedLengthStreamingMode(total)
         connection.outputStream.use { output ->
-            val head = prefix.toByteArray()
-            output.write(head); sent += head.size; onProgress?.invoke(sent, total)
             FileInputStream(file).use { input ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    output.write(buffer, 0, count)
-                    sent += count
-                    onProgress?.invoke(sent, total)
-                }
+                MultipartEncoder.write(output, boundary, file.name, input, file.length(), onProgress)
             }
-            val tail = suffix.toByteArray()
-            output.write(tail); sent += tail.size; onProgress?.invoke(sent, total)
         }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
@@ -292,4 +311,76 @@ class FileBrowserClient {
         }
         return null
     }
+
+    companion object {
+        /** Exposed for tests and callers which need the exact File Browser resources destination. */
+        fun encodedResourcePath(path: String): String {
+            val cleanPath = path.trim().let { if (it.isEmpty() || it == "/") "/" else if (it.startsWith("/")) it else "/$it" }
+            return "/api/resources" + cleanPath.split('/').joinToString("/") { segment ->
+                java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
+            }
+        }
+    }
+}
+
+/** Streaming single-file multipart writer. It never buffers file content or permits progress past [fileSize]. */
+object MultipartEncoder {
+    private const val CRLF = "\r\n"
+
+    fun escapeFilename(fileName: String): String = buildString(fileName.length) {
+        fileName.forEach { char ->
+            when (char) {
+                '"' -> append("%22")
+                '\\' -> append("%5C")
+                '\r' -> append("%0D")
+                '\n' -> append("%0A")
+                else -> append(char)
+            }
+        }
+    }
+
+    fun encodedSize(boundary: String, fileName: String, fileSize: Long): Long =
+        prefix(boundary, fileName).size.toLong() + fileSize + suffix(boundary).size
+
+    fun write(
+        output: OutputStream,
+        boundary: String,
+        fileName: String,
+        input: InputStream,
+        fileSize: Long,
+        onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null,
+    ): Long {
+        require(fileSize >= 0) { "File size cannot be negative" }
+        val head = prefix(boundary, fileName)
+        val tail = suffix(boundary)
+        val total = head.size.toLong() + fileSize + tail.size
+        var sent = 0L
+        output.write(head)
+        sent += head.size
+        onProgress?.invoke(sent, total)
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var copied = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count.toLong() > fileSize - copied) throw IOException("Input exceeded declared file size")
+            output.write(buffer, 0, count)
+            copied += count
+            sent += count
+            onProgress?.invoke(sent, total)
+        }
+        if (copied != fileSize) throw IOException("Input size did not match declared file size")
+        output.write(tail)
+        sent += tail.size
+        onProgress?.invoke(sent, total)
+        return sent
+    }
+
+    private fun prefix(boundary: String, fileName: String): ByteArray = (
+        "--$boundary$CRLF" +
+            "Content-Disposition: form-data; name=\"file\"; filename=\"${escapeFilename(fileName)}\"$CRLF" +
+            "Content-Type: application/octet-stream$CRLF$CRLF"
+        ).toByteArray(Charsets.UTF_8)
+
+    private fun suffix(boundary: String): ByteArray = "$CRLF--$boundary--$CRLF".toByteArray(Charsets.UTF_8)
 }

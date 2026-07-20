@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -38,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,7 +59,6 @@ import androidx.compose.ui.unit.dp
 import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.PreviewScreen
 import com.j2team.fileserver.R
-import com.j2team.fileserver.copyToDownloadTree
 import com.j2team.fileserver.folderIconResource
 import com.j2team.fileserver.formatBytes
 import com.j2team.fileserver.core.model.RemoteResource
@@ -67,7 +69,11 @@ import com.j2team.fileserver.core.ui.AppIcons
 import com.j2team.fileserver.feature.settings.AppSettings
 import com.j2team.fileserver.feature.transfers.TransferDirection
 import com.j2team.fileserver.feature.transfers.TransferState
+import com.j2team.fileserver.feature.transfers.TransferCoordinator
+import com.j2team.fileserver.feature.transfers.DownloadConflict
 import com.j2team.fileserver.feature.transfers.TransferStore
+import com.j2team.fileserver.feature.transfers.attentionCount
+import com.j2team.fileserver.feature.transfers.attentionBadge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -79,6 +85,7 @@ fun BrowserScreen(
     profile: ServerProfile?,
     settings: AppSettings,
     transferStore: TransferStore,
+    transferCoordinator: TransferCoordinator?,
     sessionRepository: SessionRepository,
     onBack: () -> Unit,
     onTransfers: () -> Unit,
@@ -99,6 +106,8 @@ fun BrowserScreen(
     var deleteConfirmationOpen by remember { mutableStateOf(false) }
     var mutating by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<RemoteResource?>(null) }
+    var pendingDownload by remember { mutableStateOf<RemoteResource?>(null) }
+    val transferTasks by transferStore.tasks.collectAsState()
     val unavailableDirectory = stringResource(R.string.download_directory_unavailable)
     val notPermittedMessage = stringResource(R.string.action_not_permitted)
 
@@ -121,36 +130,15 @@ fun BrowserScreen(
     LaunchedEffect(profile, path, settings.showHiddenFiles) { refresh() }
 
     fun uploadFile(uri: Uri) {
-        val current = profile ?: return
         if (!directoryPermissions.canUpload) {
             mutationError = notPermittedMessage
             return
         }
         scope.launch {
-            val name = displayName(context.contentResolver, uri) ?: "upload.bin"
-            val temporary = File.createTempFile("upload-", ".part", context.cacheDir)
-            try {
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { input -> temporary.outputStream().use(input::copyTo) }
-                        ?: error("Unable to read selected file")
-                    val permissions = sessionRepository.currentPermissions(current).getOrThrow()
-                    if (!permissions.canUpload) throw UploadNotPermitted()
-                }
-                var task = transferStore.enqueue(name, path, TransferDirection.Upload, temporary.length())
-                task = transferStore.save(task.copy(state = TransferState.Running))
-                withContext(Dispatchers.IO) {
-                    sessionRepository.uploadOnce(current, path, temporary) { sent, _ ->
-                        transferStore.update(task.id, sent, TransferState.Running)
-                    }
-                }.onSuccess {
-                    transferStore.update(task.id, task.totalBytes, TransferState.Completed)
-                    refresh()
-                }.onFailure { transferStore.update(task.id, task.transferredBytes, TransferState.Failed, it.message) }
-            } catch (error: Throwable) {
-                mutationError = if (error is UploadNotPermitted) notPermittedMessage else error.message ?: error.toString()
-            } finally {
-                temporary.delete()
-            }
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                transferCoordinator?.enqueueFile(uri, path) ?: error("No active server")
+            }.onFailure { mutationError = it.message ?: it.toString() }
         }
     }
 
@@ -159,13 +147,11 @@ fun BrowserScreen(
         else if (uri != null) mutationError = notPermittedMessage
     }
     val uploadFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        val current = profile ?: return@rememberLauncherForActivityResult
         if (uri != null && directoryPermissions.canUpload && directoryPermissions.canCreate) scope.launch {
-            withContext(Dispatchers.IO) {
-                uploadTree(context, uri, current, path, sessionRepository, transferStore)
-            }.onSuccess { refresh() }.onFailure {
-                mutationError = if (it is UploadNotPermitted) notPermittedMessage else it.message ?: it.toString()
-            }
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                transferCoordinator?.enqueueFolder(uri, path) ?: error("No active server")
+            }.onSuccess { refresh() }.onFailure { mutationError = it.message ?: it.toString() }
         } else if (uri != null) mutationError = notPermittedMessage
     }
 
@@ -173,29 +159,23 @@ fun BrowserScreen(
     val actions = SelectionPolicy.actions(selected)
 
     fun download(item: RemoteResource) {
-        val current = profile ?: return
+        val treeUri = settings.downloadTreeUri?.let(Uri::parse)
+        if (treeUri == null || transferCoordinator == null) { downloadError = unavailableDirectory; return }
         scope.launch {
-            val task = transferStore.enqueue(item.name, item.path, TransferDirection.Download, item.size)
-            val treeUri = settings.downloadTreeUri
-            val destination = treeUri?.let { File(context.cacheDir, "download-${task.id}") }
-                ?: File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), item.name)
-            downloadError = null
-            transferStore.update(task.id, 0, TransferState.Running)
-            withContext(Dispatchers.IO) {
-                sessionRepository.download(current, item.path, destination) { read, _ ->
-                    transferStore.update(task.id, read, TransferState.Running)
-                }
-            }.onSuccess { file ->
-                val saved = treeUri?.let { selectedTree ->
-                    withContext(Dispatchers.IO) { runCatching { copyToDownloadTree(context.contentResolver, selectedTree, file, item.name) } }
-                } ?: Result.success(Unit)
-                saved.onSuccess { transferStore.update(task.id, item.size, TransferState.Completed) }
-                    .onFailure {
-                        transferStore.update(task.id, 0, TransferState.Failed, it.message)
-                        downloadError = unavailableDirectory
-                    }
-                if (treeUri != null) file.delete()
-            }.onFailure { transferStore.update(task.id, 0, TransferState.Failed, it.message) }
+            runCatching {
+                if (transferCoordinator.hasDownloadConflict(treeUri, item.name)) pendingDownload = item
+                else transferCoordinator.enqueueDownload(item.path, item.name, item.size, treeUri, DownloadConflict.Replace)
+            }.onFailure { downloadError = it.message ?: unavailableDirectory }
+        }
+    }
+
+    fun resolveDownload(conflict: DownloadConflict) {
+        val item = pendingDownload ?: return
+        val treeUri = settings.downloadTreeUri?.let(Uri::parse) ?: return
+        pendingDownload = null
+        scope.launch {
+            runCatching { transferCoordinator?.enqueueDownload(item.path, item.name, item.size, treeUri, conflict) }
+                .onFailure { downloadError = it.message ?: unavailableDirectory }
         }
     }
 
@@ -225,6 +205,21 @@ fun BrowserScreen(
                 ) { Text(stringResource(R.string.create)) }
             },
             dismissButton = { TextButton(onClick = { createFolderOpen = false }, enabled = !mutating) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
+
+    pendingDownload?.let { item ->
+        AlertDialog(
+            onDismissRequest = { resolveDownload(DownloadConflict.Cancel) },
+            title = { Text("File already exists") },
+            text = { Text("Choose how to save ${item.name}.") },
+            confirmButton = { TextButton(onClick = { resolveDownload(DownloadConflict.Replace) }) { Text("Replace") } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { resolveDownload(DownloadConflict.KeepBoth) }) { Text("Keep both") }
+                    TextButton(onClick = { resolveDownload(DownloadConflict.Cancel) }) { Text(stringResource(R.string.cancel)) }
+                }
+            },
         )
     }
 
@@ -260,7 +255,9 @@ fun BrowserScreen(
         if (selected.isEmpty()) {
             AppBar(profile?.displayName ?: stringResource(R.string.app_name), onBack, action = {
                 IconButton(onClick = onTransfers, modifier = Modifier.size(48.dp)) {
-                    Icon(painterResource(AppIcons.Transfers), stringResource(R.string.transfers))
+                    BadgedBox(badge = { if (transferTasks.attentionCount() > 0) Badge { Text(transferTasks.attentionBadge()) } }) {
+                        Icon(painterResource(AppIcons.Transfers), stringResource(R.string.transfers), modifier = Modifier.size(28.dp))
+                    }
                 }
             })
         } else {

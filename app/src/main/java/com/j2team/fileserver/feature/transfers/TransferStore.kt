@@ -3,24 +3,32 @@ package com.j2team.fileserver.feature.transfers
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
 /** Small durable queue; the worker can update it as bytes are streamed. */
 class TransferStore(context: Context) {
     private val prefs = context.getSharedPreferences("transfer_queue", Context.MODE_PRIVATE)
+    private val _tasks = MutableStateFlow(readPersisted())
+    val tasks: StateFlow<List<TransferTask>> = _tasks
 
-    fun all(): List<TransferTask> = runCatching {
+    fun all(): List<TransferTask> = _tasks.value
+
+    private fun readPersisted(): List<TransferTask> = runCatching {
         val json = JSONArray(prefs.getString("items", "[]") ?: "[]")
         (0 until json.length()).map { fromJson(json.getJSONObject(it)) }.sortedByDescending { it.updatedAt }
     }.getOrDefault(emptyList())
 
-    fun enqueue(name: String, path: String, direction: TransferDirection, totalBytes: Long = 0L): TransferTask =
-        save(TransferTask(UUID.randomUUID().toString(), name, path, direction, totalBytes = totalBytes))
+    fun enqueue(name: String, path: String, direction: TransferDirection, totalBytes: Long = 0L, sourceUri: String? = null, profileId: String? = null): TransferTask =
+        save(TransferTask(UUID.randomUUID().toString(), name, path, direction, sourceUri, profileId, totalBytes = totalBytes))
 
+    @Synchronized
     fun save(task: TransferTask): TransferTask {
         val updated = task.copy(updatedAt = System.currentTimeMillis())
         val items = all().filterNot { it.id == updated.id } + updated
         prefs.edit().putString("items", JSONArray().apply { items.forEach { put(toJson(it)) } }.toString()).apply()
+        _tasks.value = items.sortedByDescending { it.updatedAt }
         return updated
     }
 
@@ -32,10 +40,12 @@ class TransferStore(context: Context) {
 
     private fun toJson(t: TransferTask) = JSONObject().apply {
         put("id", t.id); put("name", t.name); put("path", t.path); put("direction", t.direction.name)
+        put("sourceUri", t.sourceUri)
+        put("profileId", t.profileId)
         put("total", t.totalBytes); put("transferred", t.transferredBytes); put("state", t.state.name)
         put("error", t.error); put("created", t.createdAt); put("updated", t.updatedAt)
     }
     private fun fromJson(o: JSONObject) = TransferTask(o.getString("id"), o.getString("name"), o.getString("path"),
-        TransferDirection.valueOf(o.getString("direction")), o.optLong("total"), o.optLong("transferred"),
+        TransferDirection.valueOf(o.getString("direction")), o.optString("sourceUri").ifBlank { null }, o.optString("profileId").ifBlank { null }, o.optLong("total"), o.optLong("transferred"),
         runCatching { TransferState.valueOf(o.getString("state")) }.getOrDefault(TransferState.Queued), o.optString("error").ifBlank { null }, o.optLong("created"), o.optLong("updated"))
 }

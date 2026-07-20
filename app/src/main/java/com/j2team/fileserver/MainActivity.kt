@@ -121,6 +121,10 @@ private fun FileServerApp(
         var selected by remember { mutableStateOf<ServerProfile?>(null) }
         var connectionError by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+        val transferCoordinator = remember(selected?.id) {
+            selected?.let { TransferCoordinator(context.applicationContext, transferStore, sessionRepository, it) }
+        }
 
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             when (screen) {
@@ -172,11 +176,12 @@ private fun FileServerApp(
                     profile = selected,
                     settings = settings,
                     transferStore = transferStore,
+                    transferCoordinator = transferCoordinator,
                     sessionRepository = sessionRepository,
                     onBack = { screen = Screen.Servers },
                     onTransfers = { screen = Screen.Transfers },
                 )
-                Screen.Transfers -> TransfersScreen(transferStore) { screen = Screen.Browser }
+                Screen.Transfers -> TransfersScreen(transferStore, transferCoordinator) { screen = Screen.Browser }
                 Screen.Settings -> SettingsScreen(
                     settings = settings,
                     onBack = { screen = Screen.Servers },
@@ -560,7 +565,7 @@ internal fun PreviewScreen(
 }
 
 @Composable
-private fun TransfersScreen(store: TransferStore, onBack: () -> Unit) {
+private fun LegacyTransfersScreen(store: TransferStore, onBack: () -> Unit) {
     var tasks by remember { mutableStateOf(store.all()) }
     Column(Modifier.fillMaxSize()) {
         AppBar(stringResource(R.string.transfers), onBack)

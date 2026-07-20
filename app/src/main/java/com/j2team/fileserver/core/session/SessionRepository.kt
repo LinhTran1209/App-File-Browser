@@ -6,6 +6,7 @@ import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.network.FileBrowserClient
 import java.io.File
+import java.io.OutputStream
 
 class SessionRepository(
     private val secretStore: SecretStore,
@@ -75,6 +76,15 @@ class SessionRepository(
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
     ): Result<File> = authenticated(profile) { token ->
         transport.downloadResult(profile, token, remotePath, destination, onProgress)
+    }
+
+    suspend fun downloadTo(
+        profile: ServerProfile,
+        remotePath: String,
+        openDestination: () -> OutputStream,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): Result<Unit> = authenticated(profile) { token ->
+        transport.downloadToResult(profile, token, remotePath, openDestination, onProgress)
     }
 
     suspend fun readText(profile: ServerProfile, remotePath: String): Result<String> =
