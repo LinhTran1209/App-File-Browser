@@ -1,8 +1,38 @@
 Exit code: 0
-Wall time: 0.7 seconds
+Wall time: 0.6 seconds
 Output:
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">File Server</string>
+    <string name="your_servers">MÃ¡y chá»§ cá»§a báº¡n</string>
+    <string name="add_server">ThÃªm mÃ¡y chá»§</string>
+    <string name="server_address">Äá»‹a chá»‰ mÃ¡y chá»§</string>
+    <string name="display_name">TÃªn hiá»ƒn thá»‹</string>
+    <string name="save_server">LÆ°u mÃ¡y chá»§</string>
+    <string name="sign_in">ÄÄƒng nháº­p</string>
+    <string name="username">TÃªn Ä‘Äƒng nháº­p</string>
+    <string name="password">Máº­t kháº©u</string>
+    <string name="connecting">Äang káº¿t ná»‘iâ€¦</string>
+    <string name="online">Trá»±c tuyáº¿n</string>
+    <string name="offline">Ngoáº¡i tuyáº¿n</string>
+    <string name="folder">ThÆ° má»¥c</string>
+    <string name="list">Danh sÃ¡ch</string>
+    <string name="items_count">%1$d má»¥c</string>
+    <string name="transfers">Truyá»n tá»‡p</string>
+    <string name="settings">CÃ i Ä‘áº·t</string>
+    <string name="no_transfers">ChÆ°a cÃ³ tÃ¡c vá»¥ truyá»n tá»‡p</string>
+    <string name="theme">Giao diá»‡n</string>
+    <string name="theme_system">Theo há»‡ thá»‘ng</string>
+    <string name="theme_light">SÃ¡ng</string>
+    <string name="theme_dark">Tá»‘i</string>
+    <string name="show_hidden">Hiá»‡n tá»‡p áº©n</string>
+    <string name="open_transfers">Má»Ÿ danh sÃ¡ch truyá»n tá»‡p</string>
+    <string name="download">Táº£i xuá»‘ng</string>
+    <string name="upload">Táº£i lÃªn</string>
+    <string name="delete">XÃ³a</string>
+    <string name="server_empty">ChÆ°a cÃ³ mÃ¡y chá»§. HÃ£y thÃªm mÃ¡y chá»§ Ä‘á»ƒ báº¯t Ä‘áº§u.</string>
+    <string name="http_warning">HTTP khÃ´ng mÃ£ hÃ³a dá»¯ liá»‡u. Chá»‰ tiáº¿p tá»¥c trong máº¡ng tin cáº­y.</string>
+    <string name="connection_failed">KhÃ´ng thá»ƒ káº¿t ná»‘i: %1$s</string>
+    <string name="preview_unsupported">KhÃ´ng há»— trá»£ xem trÆ°á»›c Ä‘á»‹nh dáº¡ng nÃ y.</string>
 </resources>
 
