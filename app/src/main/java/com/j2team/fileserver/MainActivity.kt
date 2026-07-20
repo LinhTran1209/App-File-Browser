@@ -37,8 +37,8 @@ private enum class Screen { Servers, Add, Login, Browser, Transfers, Settings }
         Screen.Add -> Add({ screen = Screen.Servers }) { raw, name -> Endpoint.normalize(raw).fold({ e -> store.create(name.ifBlank { "File Server" }, e.scheme, e.host, e.port, e.basePath); profiles = store.all(); screen = Screen.Servers }, { }) }
         Screen.Login -> Login(selected, { screen = Screen.Servers }) { token = it; screen = Screen.Browser }
         Screen.Browser -> Browser(selected, token) { screen = Screen.Servers }
-        Screen.Transfers -> Placeholder("Transfers", { screen = Screen.Servers })
-        Screen.Settings -> Placeholder("Settings", { screen = Screen.Servers })
+        Screen.Transfers -> TransfersScreen { screen = Screen.Servers }
+        Screen.Settings -> SettingsScreen({ screen = Screen.Servers }, { screen = Screen.Transfers })
     } } }
 }
 
@@ -89,4 +89,5 @@ private enum class Screen { Servers, Add, Login, Browser, Transfers, Settings }
     }
 }
 
-@Composable private fun Placeholder(title: String, back: () -> Unit) { Column(Modifier.fillMaxSize()) { Bar(title, back); Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Feature in progress", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+@Composable private fun TransfersScreen(back: () -> Unit) { Column(Modifier.fillMaxSize()) { Bar("Transfers", back); Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No active transfers", color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+@Composable private fun SettingsScreen(back: () -> Unit, transfers: () -> Unit) { Column(Modifier.fillMaxSize()) { Bar("Settings", back); Card(Modifier.padding(16.dp).fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) { Column(Modifier.padding(16.dp)) { Text("File Server", style = MaterialTheme.typography.titleMedium); Text("Theme and connection preferences") } }; Button(onClick = transfers, modifier = Modifier.fillMaxWidth().padding(16.dp)) { Text("Open transfers") } } }
