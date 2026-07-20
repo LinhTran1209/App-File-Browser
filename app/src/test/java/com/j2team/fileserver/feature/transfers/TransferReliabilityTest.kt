@@ -12,11 +12,12 @@ import kotlinx.coroutines.sync.withPermit
 
 class TransferReliabilityTest {
     @Test fun recoveryMakesInterruptedTasksActionableWithoutReplaying() {
-        val recovered = recoverInterruptedTransfers(listOf(task("queued", TransferState.Queued), task("running", TransferState.Running), task("done", TransferState.Completed)))
+        val recovered = recoverInterruptedTransfers(listOf(task("queued", TransferState.Queued), task("running", TransferState.Running), task("paused", TransferState.Paused), task("done", TransferState.Completed)))
         assertEquals(TransferState.Failed, recovered[0].state)
         assertEquals(TransferState.Failed, recovered[1].state)
-        assertTrue(recovered.take(2).all { it.error == TransferErrors.Interrupted })
-        assertEquals(TransferState.Completed, recovered[2].state)
+        assertEquals(TransferState.Failed, recovered[2].state)
+        assertTrue(recovered.take(3).all { it.error == TransferErrors.Interrupted })
+        assertEquals(TransferState.Completed, recovered[3].state)
     }
 
     @Test fun removalCannotResurrectAfterLaterSave() {

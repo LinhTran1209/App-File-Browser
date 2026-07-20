@@ -50,7 +50,9 @@ class TransferCoordinator(
         ensureUploadPermission(requiresCreate = true)
         val rootPath = BrowserPath.child(remotePath, root.name ?: "folder")
         sessionRepository.createDirectory(profile, rootPath).getOrThrow()
-        enqueueFolderChildren(root, rootPath)
+        val files = mutableListOf<Pair<DocumentFile, String>>()
+        createDirectoryPlan(root, rootPath, files)
+        files.forEach { (child, parent) -> enqueuePlannedFile(child, parent) }
     }
 
     suspend fun hasDownloadConflict(treeUri: Uri, name: String): Boolean = withContext(Dispatchers.IO) {
@@ -78,16 +80,17 @@ class TransferCoordinator(
 
     fun retry(task: TransferTask) {
         if (!canRetry(task)) return
-        when (task.direction) {
-            TransferDirection.Upload -> startUpload(task)
-            TransferDirection.Download -> startDownload(task)
+        val queued = transferStore.queueRetry(task.id) ?: return
+        when (queued.direction) {
+            TransferDirection.Upload -> startUpload(queued)
+            TransferDirection.Download -> startDownload(queued)
         }
     }
 
     fun canRetry(task: TransferTask): Boolean =
         (task.state == TransferState.Failed || task.state == TransferState.Cancelled) && task.profileId == profile.id
 
-    private suspend fun enqueueFolderChildren(folder: DocumentFile, remoteParent: String) {
+    private suspend fun createDirectoryPlan(folder: DocumentFile, remoteParent: String, files: MutableList<Pair<DocumentFile, String>>) {
         val children = folder.listFiles().sortedBy { it.name.orEmpty() }
         // Complete directory creation for this subtree before any file is queued.
         children.filter { it.isDirectory }.forEach { child ->
@@ -95,25 +98,22 @@ class TransferCoordinator(
             val remoteDirectory = BrowserPath.child(remoteParent, name)
             ensureUploadPermission(requiresCreate = true)
             sessionRepository.createDirectory(profile, remoteDirectory).getOrThrow()
-            enqueueFolderChildren(child, remoteDirectory)
+            createDirectoryPlan(child, remoteDirectory, files)
         }
         children.filter { it.isFile }.forEach { child ->
-            val name = child.name ?: return@forEach
-                val task = transferStore.enqueue(
-                    name = name,
-                    path = remoteParent,
-                    direction = TransferDirection.Upload,
-                    totalBytes = child.length().coerceAtLeast(0L),
-                    sourceUri = child.uri.toString(),
-                    profileId = profile.id,
-                )
-                startUpload(task)
+            files += child to remoteParent
         }
+    }
+
+    private fun enqueuePlannedFile(child: DocumentFile, remoteParent: String) {
+        val name = child.name ?: return
+        val task = transferStore.enqueue(name, remoteParent, TransferDirection.Upload, child.length().coerceAtLeast(0L), child.uri.toString(), profile.id)
+        startUpload(task)
     }
 
     private fun startUpload(task: TransferTask) = scope.launch {
         streamSemaphore.withPermit {
-            var latest = transferStore.save(task.copy(state = TransferState.Running, error = null))
+            var latest = transferStore.startIfQueued(task.id) ?: return@withPermit
             try {
                 ensureUploadPermission(requiresCreate = false)
                 val uri = task.sourceUri?.let(Uri::parse) ?: throw IOException("Upload source is unavailable")
@@ -147,7 +147,7 @@ class TransferCoordinator(
 
     private fun startDownload(task: TransferTask) = scope.launch {
         streamSemaphore.withPermit {
-            var latest = transferStore.save(task.copy(state = TransferState.Running, error = null))
+            var latest = transferStore.startIfQueued(task.id) ?: return@withPermit
             var part: DocumentFile? = null
             try {
                 val permissions = sessionRepository.currentPermissions(profile).getOrThrow()

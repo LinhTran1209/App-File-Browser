@@ -43,6 +43,14 @@ class TransferStore(context: Context) {
         all().firstOrNull { it.id == id }?.let { save(it.copy(transferredBytes = transferredBytes, state = state ?: it.state, error = error)) }
 
     @Synchronized
+    fun queueRetry(id: String): TransferTask? = all().firstOrNull { it.id == id && (it.state == TransferState.Failed || it.state == TransferState.Cancelled) }
+        ?.let { save(it.copy(state = TransferState.Queued, error = null)) }
+
+    @Synchronized
+    fun startIfQueued(id: String): TransferTask? = all().firstOrNull { it.id == id && it.state == TransferState.Queued }
+        ?.let { save(it.copy(state = TransferState.Running, error = null)) }
+
+    @Synchronized
     fun remove(id: String) {
         val remaining = removeTransfer(all(), id)
         persist(remaining)

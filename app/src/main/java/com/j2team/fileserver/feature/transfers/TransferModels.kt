@@ -39,7 +39,7 @@ fun List<TransferTask>.forTab(tab: TransferTab): List<TransferTask> = filter { t
 }
 
 fun recoverInterruptedTransfers(tasks: List<TransferTask>): List<TransferTask> = tasks.map { task ->
-    if (task.state == TransferState.Queued || task.state == TransferState.Running) task.copy(state = TransferState.Failed, error = TransferErrors.Interrupted) else task
+    if (task.state == TransferState.Queued || task.state == TransferState.Running || task.state == TransferState.Paused) task.copy(state = TransferState.Failed, error = TransferErrors.Interrupted) else task
 }
 
 fun removeTransfer(tasks: List<TransferTask>, id: String): List<TransferTask> = tasks.filterNot { it.id == id }
