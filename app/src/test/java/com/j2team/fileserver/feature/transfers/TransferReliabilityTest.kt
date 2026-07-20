@@ -11,6 +11,11 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withPermit
 
 class TransferReliabilityTest {
+    @Test fun failedRestoreKeepsOwnedBackupAndRetryDoesNotDeleteIt() {
+        val first = BackupFinalizer.recoverAfterCopyFailure(partialDeleted = false, restored = false, backupName = ".old.attempt.backup")
+        assertEquals(".old.attempt.backup", first.recoveryBackup)
+        assertTrue(!BackupFinalizer.shouldDeleteBackup(ownedByAttempt = false, finalizationSucceeded = true))
+    }
     @Test fun recoveryMakesInterruptedTasksActionableWithoutReplaying() {
         val recovered = recoverInterruptedTransfers(listOf(task("queued", TransferState.Queued), task("running", TransferState.Running), task("paused", TransferState.Paused), task("done", TransferState.Completed)))
         assertEquals(TransferState.Failed, recovered[0].state)

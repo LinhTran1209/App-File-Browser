@@ -43,3 +43,10 @@ fun recoverInterruptedTransfers(tasks: List<TransferTask>): List<TransferTask> =
 }
 
 fun removeTransfer(tasks: List<TransferTask>, id: String): List<TransferTask> = tasks.filterNot { it.id == id }
+
+data class BackupRecovery(val recoveryBackup: String?)
+object BackupFinalizer {
+    fun shouldDeleteBackup(ownedByAttempt: Boolean, finalizationSucceeded: Boolean) = ownedByAttempt && finalizationSucceeded
+    fun recoverAfterCopyFailure(partialDeleted: Boolean, restored: Boolean, backupName: String): BackupRecovery =
+        BackupRecovery(if (partialDeleted && restored) null else backupName)
+}

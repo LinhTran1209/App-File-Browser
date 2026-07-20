@@ -7,11 +7,12 @@ import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.network.FileBrowserClient
 import java.io.File
 import java.io.OutputStream
+import java.util.concurrent.ConcurrentHashMap
 
 class SessionRepository(
     private val secretStore: SecretStore,
     private val transport: FileBrowserClient,
-    private val tokenStore: MutableMap<String, String> = mutableMapOf(),
+    private val tokenStore: MutableMap<String, String> = ConcurrentHashMap(),
 ) {
     suspend fun open(profile: ServerProfile): Result<AuthenticatedSession> =
         authenticated(profile) { token ->

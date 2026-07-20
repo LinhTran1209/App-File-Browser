@@ -15,6 +15,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.util.UUID
 
 enum class DownloadConflict { Replace, KeepBoth, Cancel }
 
@@ -163,9 +164,13 @@ class TransferCoordinator(
                     latest = transferStore.save(latest.copy(totalBytes = safeTotal, transferredBytes = copied))
                 }.getOrThrow()
                 // Preserve the old file until staging has succeeded. Rename it aside so a finalization failure can restore it.
-                val backupName = ".${task.name}.${task.id}.backup"
+                val backupName = ".${task.name}.${task.id}.${UUID.randomUUID()}.backup"
                 val existing = root.findFile(task.name)
-                if (existing != null && !existing.renameTo(backupName)) throw IOException("Unable to safely replace destination")
+                var backupCreatedByThisAttempt = false
+                if (existing != null) {
+                    if (!existing.renameTo(backupName)) throw IOException("Unable to safely replace destination")
+                    backupCreatedByThisAttempt = true
+                }
                 try {
                     val final = root.createFile("application/octet-stream", task.name) ?: throw IOException("Unable to create final download")
                     context.contentResolver.openInputStream(part.uri)?.use { input ->
@@ -178,10 +183,11 @@ class TransferCoordinator(
                         }
                         } ?: throw IOException("Unable to finalize download")
                     } ?: throw IOException("Unable to read temporary download")
-                    root.findFile(backupName)?.delete()
+                    if (backupCreatedByThisAttempt && root.findFile(backupName)?.delete() != true) throw IOException("Finalized download but retained backup: $backupName")
                 } catch (error: Throwable) {
-                    root.findFile(task.name)?.delete()
-                    root.findFile(backupName)?.renameTo(task.name)
+                    val partialDeleted = root.findFile(task.name)?.delete() ?: true
+                    val restored = !backupCreatedByThisAttempt || root.findFile(backupName)?.renameTo(task.name) == true
+                    if (!partialDeleted || !restored) throw IOException("${error.message ?: "Unable to finalize download"}; old file retained at $backupName", error)
                     throw error
                 }
                 transferStore.update(latest.id, latest.totalBytes.coerceAtLeast(latest.transferredBytes), TransferState.Completed)
