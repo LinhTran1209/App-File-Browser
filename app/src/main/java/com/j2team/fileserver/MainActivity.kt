@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.j2team.fileserver.core.network.Endpoint
 import com.j2team.fileserver.core.model.ServerProfile
@@ -140,7 +141,7 @@ private fun LoginScreen(profile: ServerProfile?, onConnected: (String?) -> Unit)
         if (profile?.scheme == "http") Text("HTTP is unencrypted. Continue only on your trusted home network.", color = androidx.compose.material3.MaterialTheme.colorScheme.error)
         Text("Credentials are used only for this connection and are never logged.")
         OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(password, { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
         error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
         Button(onClick = {
             if (profile == null) return@Button
