@@ -12,6 +12,9 @@ object AppIcons {
     @DrawableRes val Download = R.drawable.ic_download
     @DrawableRes val NewFolder = R.drawable.ic_new_folder
     @DrawableRes val Delete = R.drawable.ic_delete
+    @DrawableRes val Move = R.drawable.ic_move
+    @DrawableRes val File = R.drawable.ic_file
+    @DrawableRes val Video = R.drawable.ic_video
     @DrawableRes val List = R.drawable.ic_list
     @DrawableRes val Grid = R.drawable.ic_grid
     @DrawableRes val FolderClassic = R.drawable.ic_folder_classic

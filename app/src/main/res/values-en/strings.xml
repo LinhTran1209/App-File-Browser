@@ -50,6 +50,12 @@
     <string name="download_directory_unavailable">The selected download folder is unavailable. Choose it again in Settings.</string>
     <string name="new_folder">New folder</string>
     <string name="upload_files">Upload files</string>
+    <string name="move">Move</string>
+    <string name="move_selected">Move selected items</string>
+    <string name="destination_folder">Destination folder</string>
+    <string name="move_here">Move here</string>
+    <string name="file">File</string>
+    <string name="open_item">Open</string>
     <string name="upload_folder">Upload folder</string>
     <string name="folder_name">Folder name</string>
     <string name="create">Create</string>
@@ -59,6 +65,7 @@
     <string name="confirm_delete_message">Delete %1$d selected items? This cannot be undone.</string>
     <string name="action_not_permitted">This action is not permitted by the server.</string>
     <string name="dismiss">Dismiss</string>
+    <string name="clear_all">Clear all</string>
     <string name="browser_actions">File actions</string>
     <string name="browser_actions_long_press">Long press to show file actions</string>
     <string name="media_preview_error">Can\'t play this media file. You can try another app.</string>

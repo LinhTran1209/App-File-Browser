@@ -190,27 +190,39 @@ class FileBrowserClient {
         ApiResult(-1, error = error)
     }
 
-    /** Uploads one local file as multipart/form-data to a remote directory. */
+    /** Uploads the file body exactly as-is to File Browser's resource endpoint. */
     fun upload(
         profile: ServerProfile,
         token: String? = null,
         parentPath: String = "/",
         file: File,
+        remoteName: String = file.name,
         onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null
     ): Result<String> = runCatching {
         require(file.isFile) { "Upload file does not exist: ${file.name}" }
-        val boundary = "----FileServer${System.currentTimeMillis()}"
-        val connection = open(apiUrl(profile, "/api/resources", parentPath), "POST").apply {
+        val destinationPath = parentPath.trimEnd('/') + "/" + remoteName
+        // Folder retries may encounter a partially uploaded remote file. Replace it instead of
+        // failing the whole batch with 409 Conflict.
+        val connection = open(apiUrl(profile, "/api/resources", destinationPath) + "?override=true", "POST").apply {
             doOutput = true
-            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            readTimeout = 60_000
+            setRequestProperty("Content-Type", "application/octet-stream")
             setRequestProperty("Accept", "application/json")
             if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
         }
-        val total = MultipartEncoder.encodedSize(boundary, file.name, file.length())
+        val total = file.length()
         connection.setFixedLengthStreamingMode(total)
         connection.outputStream.use { output ->
             FileInputStream(file).use { input ->
-                MultipartEncoder.write(output, boundary, file.name, input, file.length(), onProgress)
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var sent = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    sent += count
+                    onProgress?.invoke(sent, total)
+                }
             }
         }
         val code = connection.responseCode
@@ -222,7 +234,9 @@ class FileBrowserClient {
 
     suspend fun createDirectory(profile: ServerProfile, token: String? = null, path: String): Result<Unit> = runCatching {
         require(path.isNotBlank() && path != "/") { "Directory path is required" }
-        val connection = open(apiUrl(profile, "/api/resources", path), "POST").apply {
+        // File Browser distinguishes a directory from an empty file by the trailing slash.
+        val directoryPath = path.trimEnd('/') + "/"
+        val connection = open(apiUrl(profile, "/api/resources", directoryPath), "POST").apply {
             setRequestProperty("Accept", "application/json")
             if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
         }
@@ -244,6 +258,46 @@ class FileBrowserClient {
         }
     }
 
+    suspend fun move(
+        profile: ServerProfile,
+        token: String? = null,
+        resources: List<RemoteResource>,
+        destinationDirectory: String,
+    ): Result<Unit> = runCatching {
+        require(resources.isNotEmpty()) { "At least one resource is required" }
+        val destinationParent = destinationDirectory.trim().let { if (it.isEmpty()) "/" else "/" + it.trim('/') }
+        resources.forEach { resource ->
+            val sourcePath = resource.path + if (resource.isDirectory && !resource.path.endsWith('/')) "/" else ""
+            val destinationPath = destinationParent.trimEnd('/') + "/" + resource.name
+            val encodedDestination = java.net.URLEncoder.encode(destinationPath, Charsets.UTF_8.name()).replace("+", "%20")
+            val url = apiUrl(profile, "/api/resources", sourcePath) +
+                "?action=rename&destination=$encodedDestination&override=false&rename=false"
+            val connection = open(url, "PATCH").apply {
+                setRequestProperty("Accept", "application/json")
+                if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            }
+            val code = connection.responseCode
+            require(code in 200..299) { requestError("Unable to move resource", code, connection) }
+        }
+    }
+
+    fun thumbnailResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        destination: File,
+    ): ApiResult<File> = try {
+        val connection = open(apiUrl(profile, "/api/preview/thumb", remotePath), "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Thumbnail unavailable ($code)"))
+        destination.parentFile?.mkdirs()
+        connection.inputStream.use { input -> destination.outputStream().buffered().use(input::copyTo) }
+        ApiResult(code, destination)
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
     fun login(profile: ServerProfile, username: String, password: String): Result<String> = runCatching {
         val connection = open(profile.endpoint + "api/login", "POST")
         connection.setRequestProperty("Content-Type", "application/json")
@@ -251,6 +305,19 @@ class FileBrowserClient {
         connection.outputStream.use { it.write(JSONObject().put("username", username).put("password", password).toString().toByteArray()) }
         require(connection.responseCode in 200..299) { "Login failed (${connection.responseCode})" }
         connection.inputStream.bufferedReader().use { it.readText().trim('"', '\n', ' ') }
+    }
+
+    fun isReachable(profile: ServerProfile): Boolean = try {
+        val connection = (URL(profile.endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 2_500
+            readTimeout = 2_500
+            instanceFollowRedirects = false
+            useCaches = false
+        }
+        connection.responseCode in 100..599
+    } catch (_: Throwable) {
+        false
     }
 
     fun list(profile: ServerProfile, token: String? = null, path: String = "/"): Result<List<RemoteResource>> =
@@ -295,7 +362,7 @@ class FileBrowserClient {
                 add(RemoteResource(
                     name = item.optString("name"),
                     path = item.optString("path", path),
-                    isDirectory = item.optBoolean("isDir"),
+                    isDirectory = directoryOf(item),
                     size = item.optLong("size"),
                     mimeType = item.optString("mimeType").ifBlank { item.optString("mime") }.takeIf { it.isNotBlank() },
                     permissions = permissionsOf(item, responsePermissions),
@@ -371,6 +438,15 @@ class FileBrowserClient {
             canCreate = allowed("canCreate", inherited.canCreate),
             canDelete = allowed("canDelete", inherited.canDelete),
         )
+    }
+
+    private fun directoryOf(item: JSONObject): Boolean {
+        val type = item.optString("type").lowercase()
+        val mime = item.optString("mimeType").ifBlank { item.optString("mime") }.lowercase()
+        return item.optBoolean("isDir") ||
+            item.optBoolean("isDirectory") ||
+            type in setOf("dir", "directory", "folder") ||
+            mime == "inode/directory"
     }
 
     private fun requestError(prefix: String, code: Int, connection: HttpURLConnection): String {
