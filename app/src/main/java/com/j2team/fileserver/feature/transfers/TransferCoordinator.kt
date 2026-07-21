@@ -28,6 +28,7 @@ class TransferCoordinator(
 ) {
     private val scope get() = TransferRuntime.scope
     private val streamSemaphore get() = TransferRuntime.streamSemaphore
+    private val uploadSemaphore get() = TransferRuntime.uploadSemaphore
 
     suspend fun enqueueFile(uri: Uri, remotePath: String): TransferTask = withContext(Dispatchers.IO) {
         val source = DocumentFile.fromSingleUri(context, uri) ?: throw IOException("Unable to access selected file")
@@ -113,7 +114,9 @@ class TransferCoordinator(
     }
 
     private fun startUpload(task: TransferTask) = scope.launch {
-        streamSemaphore.withPermit {
+        // File Browser on small servers can close one of multiple simultaneous POST bodies.
+        // Serialize uploads while downloads keep their own two-stream allowance.
+        uploadSemaphore.withPermit {
             var latest = transferStore.startIfQueued(task.id) ?: return@withPermit
             try {
                 ensureUploadPermission(requiresCreate = false)
@@ -132,7 +135,7 @@ class TransferCoordinator(
                     } ?: throw IOException("Unable to read ${task.name}")
                     latest = transferStore.save(latest.copy(totalBytes = temporary.length()))
                     // uploadOnce authenticates with a safe read, then deliberately sends this mutation once only.
-                    sessionRepository.uploadOnce(profile, latest.path, temporary) { sent, total ->
+                    sessionRepository.uploadOnce(profile, latest.path, temporary, latest.name) { sent, total ->
                         latest = transferStore.update(latest.id, sent.coerceAtMost(total), TransferState.Running) ?: latest
                     }.getOrThrow()
                     transferStore.update(latest.id, latest.totalBytes, TransferState.Completed)
@@ -225,4 +228,5 @@ class TransferCoordinator(
 object TransferRuntime {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val streamSemaphore = Semaphore(2)
+    val uploadSemaphore = Semaphore(1)
 }

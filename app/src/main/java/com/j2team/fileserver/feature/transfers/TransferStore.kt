@@ -56,6 +56,13 @@ class TransferStore(context: Context, preferencesName: String = "transfer_queue"
         persist(remaining)
         _tasks.value = remaining.sortedByDescending { it.updatedAt }
     }
+
+    @Synchronized
+    fun clear(direction: TransferDirection) {
+        val remaining = all().filterNot { it.direction == direction }
+        persist(remaining)
+        _tasks.value = remaining.sortedByDescending { it.updatedAt }
+    }
     fun active(): List<TransferTask> = all().filter { it.isActive }
 
     private fun toJson(t: TransferTask) = JSONObject().apply {
