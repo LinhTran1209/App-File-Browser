@@ -17,6 +17,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -261,10 +263,28 @@ private fun ServersScreen(
                 modifier = Modifier.padding(vertical = 16.dp),
             )
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (profiles.isEmpty()) item { Text(stringResource(R.string.server_empty), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                items(profiles, key = { it.id }) { profile ->
-                    ServerCard(profile, sessionRepository, { onOpen(profile) }, { onDelete(profile) })
+            if (profiles.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Image(
+                            painterResource(R.drawable.server_icon),
+                            contentDescription = null,
+                            modifier = Modifier.size(72.dp),
+                            alpha = 0.72f,
+                        )
+                        Text(
+                            stringResource(R.string.server_empty),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 32.dp),
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(profiles, key = { it.id }) { profile ->
+                        ServerCard(profile, sessionRepository, { onOpen(profile) }, { onDelete(profile) })
+                    }
                 }
             }
             Button(
@@ -370,15 +390,19 @@ internal fun LoginScreen(
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         AppBar(stringResource(R.string.sign_in), onBack)
-        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(
+            Modifier.weight(1f).fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Spacer(Modifier.height(20.dp))
             Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(88.dp))
             Text(profile?.displayName ?: stringResource(R.string.app_name), style = MaterialTheme.typography.headlineMedium)
             Text(profile?.endpoint.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
-            OutlinedTextField(username, { username = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp))
+            OutlinedTextField(username, { username = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp), singleLine = true, shape = RoundedCornerShape(12.dp))
             OutlinedTextField(
-                password, { password = it }, label = { Text(stringResource(R.string.password)) }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                password, { password = it }, label = { Text(stringResource(R.string.password)) }, modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp), singleLine = true,
                 visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp),
                 trailingIcon = { IconButton(onClick = { passwordVisible = !passwordVisible }) { Icon(painterResource(if (passwordVisible) AppIcons.VisibilityOff else AppIcons.Visibility), contentDescription = stringResource(if (passwordVisible) R.string.hide_password else R.string.show_password)) } },
             )

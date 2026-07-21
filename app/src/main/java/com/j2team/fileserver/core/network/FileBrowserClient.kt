@@ -281,6 +281,29 @@ class FileBrowserClient {
         }
     }
 
+    suspend fun rename(
+        profile: ServerProfile,
+        token: String? = null,
+        resource: RemoteResource,
+        newName: String,
+    ): Result<Unit> = runCatching {
+        require(newName.isNotBlank() && newName != "." && newName != ".." && '/' !in newName && '\\' !in newName) {
+            "A valid resource name is required"
+        }
+        val sourcePath = resource.path + if (resource.isDirectory && !resource.path.endsWith('/')) "/" else ""
+        val parent = resource.path.substringBeforeLast('/', missingDelimiterValue = "").ifEmpty { "/" }
+        val destinationPath = parent.trimEnd('/') + "/" + newName.trim()
+        val encodedDestination = java.net.URLEncoder.encode(destinationPath, Charsets.UTF_8.name()).replace("+", "%20")
+        val url = apiUrl(profile, "/api/resources", sourcePath) +
+            "?action=rename&destination=$encodedDestination&override=false&rename=false"
+        val connection = open(url, "PATCH").apply {
+            setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+        }
+        val code = connection.responseCode
+        require(code in 200..299) { requestError("Unable to rename resource", code, connection) }
+    }
+
     fun thumbnailResult(
         profile: ServerProfile,
         token: String?,
@@ -341,6 +364,7 @@ class FileBrowserClient {
             canUpload = permissionEnabled(permissions, "create"),
             canCreate = permissionEnabled(permissions, "create"),
             canDelete = permissionEnabled(permissions, "delete"),
+            canRename = permissionEnabled(permissions, "rename"),
         ))
     } catch (error: Throwable) {
         ApiResult(-1, error = error)
@@ -437,6 +461,7 @@ class FileBrowserClient {
             canUpload = allowed("canUpload", inherited.canUpload),
             canCreate = allowed("canCreate", inherited.canCreate),
             canDelete = allowed("canDelete", inherited.canDelete),
+            canRename = allowed("canRename", inherited.canRename),
         )
     }
 

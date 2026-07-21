@@ -13,6 +13,9 @@ object AppIcons {
     @DrawableRes val NewFolder = R.drawable.ic_new_folder
     @DrawableRes val Delete = R.drawable.ic_delete
     @DrawableRes val Move = R.drawable.ic_move
+    @DrawableRes val Edit = R.drawable.ic_edit
+    @DrawableRes val SortAscending = R.drawable.ic_sort_ascending
+    @DrawableRes val SortDescending = R.drawable.ic_sort_descending
     @DrawableRes val File = R.drawable.ic_file
     @DrawableRes val Video = R.drawable.ic_video
     @DrawableRes val List = R.drawable.ic_list

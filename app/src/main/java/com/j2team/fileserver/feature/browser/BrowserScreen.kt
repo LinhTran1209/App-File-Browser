@@ -127,6 +127,9 @@ fun BrowserScreen(
     var moveDestination by remember(path) { mutableStateOf(path) }
     var moveDirectories by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var moveLoading by remember { mutableStateOf(false) }
+    var sortAscending by remember { mutableStateOf(true) }
+    var renameDialogOpen by remember { mutableStateOf(false) }
+    var renameValue by remember { mutableStateOf("") }
     val transferTasks by transferStore.tasks.collectAsState()
     val unavailableDirectory = stringResource(R.string.download_directory_unavailable)
     val notPermittedMessage = stringResource(R.string.action_not_permitted)
@@ -149,7 +152,7 @@ fun BrowserScreen(
                 .onSuccess { listing ->
                     directoryPermissions = listing.directoryPermissions
                     resources = listing.resources.filter { settings.showHiddenFiles || !it.name.startsWith(".") }
-                        .sortedWith(compareByDescending<RemoteResource> { it.isDirectory }.thenBy { it.name.lowercase() })
+                        .sortedByResourceName(sortAscending)
                     selectedPaths = selectedPaths.intersect(resources.mapTo(mutableSetOf()) { it.path })
                     listError = null
                 }
@@ -310,6 +313,46 @@ fun BrowserScreen(
         )
     }
 
+    if (renameDialogOpen) {
+        val item = selected.singleOrNull()
+        AlertDialog(
+            onDismissRequest = { if (!mutating) renameDialogOpen = false },
+            modifier = Modifier.fillMaxWidth(0.82f),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            title = { Text(stringResource(R.string.rename_item)) },
+            text = {
+                OutlinedTextField(
+                    value = renameValue,
+                    onValueChange = { renameValue = it },
+                    label = { Text(stringResource(R.string.new_name)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !mutating && item != null && renameValue.isValidResourceName() && renameValue != item.name,
+                    onClick = {
+                        val current = profile ?: return@TextButton
+                        val renaming = item ?: return@TextButton
+                        mutating = true
+                        scope.launch {
+                            withContext(Dispatchers.IO) { sessionRepository.rename(current, renaming, renameValue.trim()) }
+                                .onSuccess {
+                                    selectedPaths = emptySet()
+                                    renameDialogOpen = false
+                                    refresh()
+                                }
+                                .onFailure { mutationError = it.message ?: it.toString() }
+                            mutating = false
+                        }
+                    },
+                ) { Text(stringResource(R.string.rename)) }
+            },
+            dismissButton = { TextButton(onClick = { renameDialogOpen = false }, enabled = !mutating) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
+
     if (moveDialogOpen) {
         AlertDialog(
             onDismissRequest = { if (!mutating) moveDialogOpen = false },
@@ -374,6 +417,12 @@ fun BrowserScreen(
             })
         } else {
             AppBar(stringResource(R.string.selected_count, selected.size), onBack = { selectedPaths = emptySet() }, action = {
+                if (actions.canRename) IconButton(onClick = {
+                    renameValue = selected.single().name
+                    renameDialogOpen = true
+                }, modifier = Modifier.size(48.dp)) {
+                    Icon(painterResource(AppIcons.Edit), stringResource(R.string.rename))
+                }
                 if (actions.canDownload) IconButton(onClick = { selected.forEach(::download) }, modifier = Modifier.size(48.dp)) {
                     Icon(painterResource(AppIcons.Download), stringResource(R.string.download))
                 }
@@ -413,9 +462,27 @@ fun BrowserScreen(
                 mutationError = null; uploadFolderPicker.launch(null)
             }
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(if (settings.gridView) R.string.grid else R.string.list), fontWeight = FontWeight.Medium)
-            Text(stringResource(R.string.items_count, resources.size), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = {
+                        sortAscending = !sortAscending
+                        resources = resources.sortedByResourceName(sortAscending)
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                ) {
+                    Text(stringResource(R.string.name))
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        painterResource(if (sortAscending) AppIcons.SortAscending else AppIcons.SortDescending),
+                        contentDescription = stringResource(if (sortAscending) R.string.sort_ascending else R.string.sort_descending),
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.items_count, resources.size), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         listError?.let { Text(stringResource(R.string.connection_failed, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
@@ -465,6 +532,19 @@ fun BrowserScreen(
             }
         }
     }
+}
+
+private fun List<RemoteResource>.sortedByResourceName(ascending: Boolean): List<RemoteResource> = sortedWith { left, right ->
+    if (left.isDirectory != right.isDirectory) {
+        if (left.isDirectory) -1 else 1
+    } else {
+        left.name.compareTo(right.name, ignoreCase = true) * if (ascending) 1 else -1
+    }
+}
+
+private fun String.isValidResourceName(): Boolean {
+    val value = trim()
+    return value.isNotEmpty() && value != "." && value != ".." && '/' !in value && '\\' !in value
 }
 
 @Composable

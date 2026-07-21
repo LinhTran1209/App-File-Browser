@@ -27,7 +27,7 @@
     <string name="download">Download</string>
     <string name="upload">Upload</string>
     <string name="delete">Delete</string>
-    <string name="server_empty">No servers yet. Add one to get started.</string>
+    <string name="server_empty">No servers yet</string>
     <string name="http_warning">HTTP is unencrypted. Continue only on a trusted network.</string>
     <string name="connection_failed">Connection failed: %1$s</string>
     <string name="preview_unsupported">This format cannot be previewed.</string>
@@ -76,7 +76,10 @@
     <string name="media_pause">Pause</string>
     <string name="media_loading">Loading media</string>
     <string name="media_seek">Playback position</string>
-    <string name="preview_cache">Preview cache</string>
-    <string name="clear_cache">Clear cache</string>
-    <string name="cache_limit">Automatically limited to 32 MB</string>
+    <string name="name">Name</string>
+    <string name="sort_ascending">Sort names ascending</string>
+    <string name="sort_descending">Sort names descending</string>
+    <string name="rename">Rename</string>
+    <string name="rename_item">Rename file or folder</string>
+    <string name="new_name">New name</string>
 </resources>

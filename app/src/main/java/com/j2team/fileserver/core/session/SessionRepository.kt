@@ -121,6 +121,12 @@ class SessionRepository(
             onFailure = { error -> Result.failure(error) },
         )
 
+    suspend fun rename(profile: ServerProfile, resource: RemoteResource, newName: String): Result<Unit> =
+        mutationToken(profile).fold(
+            onSuccess = { token -> transport.rename(profile, token, resource, newName) },
+            onFailure = { error -> Result.failure(error) },
+        )
+
     suspend fun thumbnail(profile: ServerProfile, remotePath: String, destination: File): Result<File> =
         authenticated(profile) { token -> transport.thumbnailResult(profile, token, remotePath, destination) }
 

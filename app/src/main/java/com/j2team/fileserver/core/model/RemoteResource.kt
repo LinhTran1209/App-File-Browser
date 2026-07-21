@@ -15,6 +15,7 @@ data class ResourcePermissions(
     val canUpload: Boolean = false,
     val canCreate: Boolean = false,
     val canDelete: Boolean = false,
+    val canRename: Boolean = false,
 )
 
 data class ResourceListing(

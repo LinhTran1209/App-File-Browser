@@ -27,7 +27,7 @@
     <string name="download">Tải xuống</string>
     <string name="upload">Tải lên</string>
     <string name="delete">Xóa</string>
-    <string name="server_empty">Chưa có máy chủ. Hãy thêm máy chủ để bắt đầu.</string>
+    <string name="server_empty">Chưa có máy chủ</string>
     <string name="http_warning">HTTP không mã hóa dữ liệu. Chỉ tiếp tục trong mạng tin cậy.</string>
     <string name="connection_failed">Không thể kết nối: %1$s</string>
     <string name="preview_unsupported">Không hỗ trợ xem trước định dạng này.</string>
@@ -76,7 +76,10 @@
     <string name="media_pause">T&#7841;m d&#7915;ng</string>
     <string name="media_loading">&#272;ang t&#7843;i media</string>
     <string name="media_seek">V&#7883; tr&#237; ph&#225;t</string>
-    <string name="preview_cache">B&#7897; nh&#7899; &#273;&#7879;m xem tr&#432;&#7899;c</string>
-    <string name="clear_cache">X&#243;a b&#7897; nh&#7899; &#273;&#7879;m</string>
-    <string name="cache_limit">T&#7921; &#273;&#7897;ng gi&#7899;i h&#7841;n &#7903; 32 MB</string>
+    <string name="name">T&#234;n</string>
+    <string name="sort_ascending">S&#7855;p x&#7871;p t&#234;n t&#259;ng d&#7847;n</string>
+    <string name="sort_descending">S&#7855;p x&#7871;p t&#234;n gi&#7843;m d&#7847;n</string>
+    <string name="rename">&#272;&#7893;i t&#234;n</string>
+    <string name="rename_item">&#272;&#7893;i t&#234;n t&#7879;p ho&#7863;c th&#432; m&#7909;c</string>
+    <string name="new_name">T&#234;n m&#7899;i</string>
 </resources>
