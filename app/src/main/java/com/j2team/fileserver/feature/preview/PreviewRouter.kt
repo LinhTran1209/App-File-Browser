@@ -13,7 +13,10 @@ object PreviewRouter {
     private val text = setOf(
         "txt", "md", "markdown", "py", "pyw", "json", "xml", "yaml", "yml", "toml", "ini", "conf", "cfg", "log", "csv", "tsv",
         "kt", "kts", "java", "c", "h", "cpp", "hpp", "cs", "js", "jsx", "ts", "tsx", "html", "htm", "css", "scss", "sql",
-        "sh", "bash", "zsh", "ps1", "bat", "gradle", "properties", "env", "dockerfile",
+        "sh", "bash", "zsh", "ps1", "bat", "gradle", "properties", "env", "dockerfile", "ipynb",
+        "r", "rb", "php", "go", "rs", "swift", "dart", "lua", "pl", "vue", "svelte", "astro",
+        "graphql", "gql", "lock", "gitignore", "gitattributes", "editorconfig", "npmrc", "yarnrc",
+        "npmignore", "dockerignore", "make", "mk", "cmake", "tex", "rst", "manifest",
     )
     private val extensionlessTextNames = setOf("readme", "license", "copying", "notice", "dockerfile", "makefile", "procfile", "gemfile", "rakefile")
 

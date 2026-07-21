@@ -47,6 +47,8 @@ internal fun PreviewScreen(
     item: RemoteResource,
     @Suppress("UNUSED_PARAMETER") transferStore: TransferStore,
     sessionRepository: SessionRepository,
+    imageSiblings: List<RemoteResource> = emptyList(),
+    onNavigateImage: (RemoteResource) -> Unit = {},
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -56,6 +58,7 @@ internal fun PreviewScreen(
     var resolvedMimeType by remember(item.path) { mutableStateOf<String?>(null) }
     var error by remember(item.path) { mutableStateOf<String?>(null) }
     var openLargeText by remember(item.path) { mutableStateOf(false) }
+    val imageIndex = remember(item.path, imageSiblings) { imageSiblings.indexOfFirst { it.path == item.path } }
 
     DisposableEffect(temporaryFile) {
         onDispose { temporaryFile.delete() }
@@ -104,11 +107,19 @@ internal fun PreviewScreen(
                 )
                 requiresDownloadedFile(kind!!) && downloadedFile == null -> CircularProgressIndicator()
                 kind == PreviewKind.Pdf -> PdfPreview(downloadedFile!!)
-                kind == PreviewKind.Image -> ImagePreview(downloadedFile!!, item.name)
+                kind == PreviewKind.Image -> ImagePreview(
+                    file = downloadedFile!!,
+                    description = item.name,
+                    onSwipeUp = imageSiblings.getOrNull(imageIndex + 1)?.let { next -> { onNavigateImage(next) } },
+                    onSwipeDown = imageSiblings.getOrNull(imageIndex - 1)?.let { previous -> { onNavigateImage(previous) } },
+                )
             }
         }
         Text(
-            "${formatBytes(item.size)}  •  ${item.mimeType ?: PreviewRouter.mimeType(item.name)}",
+            buildString {
+                append("${formatBytes(item.size)}  •  ${resolvedMimeType ?: item.mimeType ?: PreviewRouter.mimeType(item.name)}")
+                if (kind == PreviewKind.Image && imageIndex >= 0 && imageSiblings.size > 1) append("  •  ${imageIndex + 1}/${imageSiblings.size}")
+            },
             color = Color.White,
             modifier = Modifier.padding(16.dp),
         )

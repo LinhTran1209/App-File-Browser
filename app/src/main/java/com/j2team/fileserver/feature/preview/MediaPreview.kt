@@ -1,15 +1,29 @@
 package com.j2team.fileserver.feature.preview
 
-import android.content.ActivityNotFoundException
+import android.app.Activity
 import android.content.Context
-import android.content.Intent
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,15 +38,24 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -45,10 +68,6 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.session.SessionRepository
 import java.io.File
-import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -175,28 +194,13 @@ internal fun MediaPreview(
     val scope = rememberCoroutineScope()
     val authError = stringResource(R.string.media_preview_auth_error)
     val playbackError = stringResource(R.string.media_preview_error)
-    val externalError = stringResource(R.string.media_external_error)
     val loadingDescription = stringResource(R.string.media_loading)
     val mimeType = remember(item.name, declaredMimeType) { mediaMimeType(item.name, declaredMimeType) }
     val sessionStateKey = remember(profile.id, item.path) { mediaSessionStateKey(profile.id, item.path) }
     var token by remember(sessionStateKey) { mutableStateOf<String?>(null) }
     var localError by remember(sessionStateKey) { mutableStateOf<String?>(null) }
     var retryState by remember(sessionStateKey) { mutableStateOf(StreamRetryState()) }
-    var isOpeningExternally by remember(sessionStateKey) { mutableStateOf(false) }
-    var fallbackJob by remember(sessionStateKey) { mutableStateOf<Job?>(null) }
     var savedPositionMs by rememberSaveable(sessionStateKey) { mutableLongStateOf(0L) }
-    val disposed = remember(sessionStateKey) { AtomicBoolean(false) }
-    val externalFile = remember(sessionStateKey) {
-        File(context.cacheDir, "media/${UUID.randomUUID()}-${item.name.substringAfterLast('/').replace('\\', '_')}")
-    }
-
-    DisposableEffect(externalFile) {
-        onDispose {
-            disposed.set(true)
-            fallbackJob?.cancel()
-            cleanupFallbackFiles(externalFile)
-        }
-    }
     LaunchedEffect(profile.id, item.path) {
         sessionRepository.streamingToken(profile)
             .onSuccess { token = it }
@@ -243,58 +247,6 @@ internal fun MediaPreview(
             )
         }
         localError?.let { Text(it, modifier = Modifier.padding(16.dp)) }
-        Button(
-            enabled = !isOpeningExternally,
-            onClick = {
-                isOpeningExternally = true
-                fallbackJob = scope.launch {
-                    cleanupFallbackFiles(externalFile)
-                    externalFile.parentFile?.mkdirs()
-                    val partFile = fallbackCleanupFiles(externalFile).last()
-                    try {
-                        val result = sessionRepository.downloadTo(
-                            profile = profile,
-                            remotePath = item.path,
-                            openDestination = { partFile.outputStream() },
-                        )
-                        if (!currentCoroutineContext().isActive || disposed.get()) {
-                            cleanupFallbackFiles(externalFile)
-                            return@launch
-                        }
-                        result.onSuccess {
-                            if (!partFile.renameTo(externalFile) || disposed.get()) {
-                                cleanupFallbackFiles(externalFile)
-                                if (!disposed.get()) localError = externalError
-                                return@onSuccess
-                            }
-                            try {
-                                context.startActivity(Intent(Intent.ACTION_VIEW).apply {
-                                    val type = mimeType ?: "application/octet-stream"
-                                    setDataAndType(FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", externalFile), type)
-                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                })
-                            } catch (_: ActivityNotFoundException) {
-                                cleanupFallbackFiles(externalFile)
-                                localError = externalError
-                            }
-                        }.onFailure {
-                            cleanupFallbackFiles(externalFile)
-                            localError = externalError
-                        }
-                    } catch (_: CancellationException) {
-                        cleanupFallbackFiles(externalFile)
-                    } finally {
-                        if (!disposed.get()) {
-                            isOpeningExternally = false
-                            fallbackJob = null
-                        }
-                    }
-                }
-            },
-            modifier = Modifier.padding(16.dp),
-        ) {
-            Text(stringResource(R.string.media_open_with))
-        }
     }
 }
 
@@ -320,6 +272,11 @@ private fun MediaPlayerContent(
     var isLoading by remember(player) { mutableStateOf(true) }
     var durationMs by remember(player) { mutableLongStateOf(0L) }
     var seekPositionMs by remember(player) { mutableLongStateOf(initialPositionMs) }
+    var videoAspectRatio by remember(player) { mutableStateOf(16f / 9f) }
+    var fullscreen by rememberSaveable(player) { mutableStateOf(false) }
+    var controlsVisible by remember(player) { mutableStateOf(true) }
+    var controlsVersion by remember(player) { mutableLongStateOf(0L) }
+    val activity = remember(context) { context.findActivity() }
     DisposableEffect(player) {
         onDispose { player.release() }
     }
@@ -329,6 +286,11 @@ private fun MediaPlayerContent(
             override fun onPlaybackStateChanged(state: Int) {
                 isLoading = state == Player.STATE_BUFFERING
                 durationMs = player.duration.coerceAtLeast(0L)
+            }
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    videoAspectRatio = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
+                }
             }
             override fun onPlayerError(error: PlaybackException) { onFailure(error.isAuthenticationFailure()) }
         }
@@ -344,24 +306,189 @@ private fun MediaPlayerContent(
             delay(500)
         }
     }
-
-    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        PlayerSurface(player = player, modifier = Modifier.weight(1f).fillMaxWidth())
-        if (isLoading) Text(loadingDescription, modifier = Modifier.semantics { contentDescription = loadingDescription })
-        Slider(
-            value = seekPositionMs.coerceAtMost(durationMs.coerceAtLeast(1L)).toFloat(),
-            onValueChange = { seekPositionMs = it.toLong() },
-            onValueChangeFinished = {
-                player.seekTo(seekPositionMs)
-                onPositionChanged(seekPositionMs)
-            },
-            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics { contentDescription = seekDescription },
-        )
-        Button(onClick = { if (player.isPlaying) player.pause() else player.play() }) {
-            Text(stringResource(if (isPlaying) R.string.media_pause else R.string.media_play))
+    LaunchedEffect(controlsVisible, controlsVersion, isPlaying) {
+        if (controlsVisible && isPlaying) {
+            delay(3_000)
+            controlsVisible = false
         }
     }
+
+    if (fullscreen) {
+        DisposableEffect(activity) {
+            val previousOrientation = activity?.requestedOrientation
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            activity?.window?.let { window ->
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    hide(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+            onDispose {
+                activity?.window?.let { window ->
+                    WindowCompat.getInsetsController(window, window.decorView).show(WindowInsetsCompat.Type.systemBars())
+                }
+                if (previousOrientation != null) activity.requestedOrientation = previousOrientation
+            }
+        }
+    }
+
+    fun showControls() {
+        controlsVisible = true
+        controlsVersion++
+    }
+
+    val playerContent: @Composable (Modifier) -> Unit = { contentModifier ->
+        Box(
+            modifier = contentModifier.background(Color.Black).clickable {
+                controlsVisible = !controlsVisible
+                if (controlsVisible) controlsVersion++
+            },
+            contentAlignment = Alignment.Center,
+        ) {
+            BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                val containerRatio = maxWidth.value / maxHeight.value.coerceAtLeast(1f)
+                val videoModifier = if (containerRatio > videoAspectRatio) {
+                    Modifier.fillMaxHeight().aspectRatio(videoAspectRatio)
+                } else {
+                    Modifier.fillMaxWidth().aspectRatio(videoAspectRatio)
+                }
+                PlayerSurface(player = player, modifier = videoModifier)
+            }
+            if (isLoading) CircularProgressIndicator(
+                modifier = Modifier.semantics { contentDescription = loadingDescription },
+            )
+            if (controlsVisible) {
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f))) {
+                    Row(
+                        modifier = Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 36.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = {
+                            player.seekTo((player.currentPosition - 5_000L).coerceAtLeast(0L))
+                            showControls()
+                        }, modifier = Modifier.size(52.dp)) { SeekFiveIcon(backward = true) }
+                        IconButton(onClick = {
+                            if (player.isPlaying) player.pause() else player.play()
+                            showControls()
+                        }, modifier = Modifier.size(64.dp)) { PlayPauseIcon(isPlaying) }
+                        IconButton(onClick = {
+                            val upperBound = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+                            player.seekTo((player.currentPosition + 5_000L).coerceAtMost(upperBound))
+                            showControls()
+                        }, modifier = Modifier.size(52.dp)) { SeekFiveIcon(backward = false) }
+                    }
+                    Column(
+                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${formatMediaTime(seekPositionMs)} / ${formatMediaTime(durationMs)}",
+                                color = Color.White,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(onClick = { fullscreen = !fullscreen; showControls() }) {
+                                FullscreenIcon(exit = fullscreen)
+                            }
+                        }
+                        Slider(
+                            value = seekPositionMs.coerceAtMost(durationMs.coerceAtLeast(1L)).toFloat(),
+                            onValueChange = { seekPositionMs = it.toLong(); showControls() },
+                            onValueChangeFinished = {
+                                player.seekTo(seekPositionMs)
+                                onPositionChanged(seekPositionMs)
+                                showControls()
+                            },
+                            valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
+                            modifier = Modifier.fillMaxWidth().semantics { contentDescription = seekDescription },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (fullscreen) {
+        Dialog(
+            onDismissRequest = { fullscreen = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            playerContent(
+                Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+            )
+        }
+    } else {
+        playerContent(modifier)
+    }
+}
+
+@Composable
+private fun PlayPauseIcon(isPlaying: Boolean) {
+    Canvas(Modifier.size(44.dp)) {
+        if (isPlaying) {
+            drawRect(Color.White, topLeft = Offset(size.width * .25f, size.height * .18f), size = androidx.compose.ui.geometry.Size(size.width * .16f, size.height * .64f))
+            drawRect(Color.White, topLeft = Offset(size.width * .59f, size.height * .18f), size = androidx.compose.ui.geometry.Size(size.width * .16f, size.height * .64f))
+        } else {
+            val path = androidx.compose.ui.graphics.Path().apply {
+                moveTo(size.width * .28f, size.height * .15f)
+                lineTo(size.width * .82f, size.height * .5f)
+                lineTo(size.width * .28f, size.height * .85f)
+                close()
+            }
+            drawPath(path, Color.White)
+        }
+    }
+}
+
+@Composable
+private fun SeekFiveIcon(backward: Boolean) {
+    Box(
+        Modifier.size(36.dp).background(Color.Black.copy(alpha = .45f), CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val edgeX = size.width * if (backward) .17f else .83f
+            val innerX = size.width * if (backward) .31f else .69f
+            val stroke = 1.8.dp.toPx()
+            drawLine(Color.White, Offset(edgeX, size.height * .5f), Offset(innerX, size.height * .35f), stroke, StrokeCap.Round)
+            drawLine(Color.White, Offset(edgeX, size.height * .5f), Offset(innerX, size.height * .65f), stroke, StrokeCap.Round)
+        }
+        Text("5", color = Color.White, style = androidx.compose.material3.MaterialTheme.typography.labelLarge)
+    }
+}
+
+@Composable
+private fun FullscreenIcon(exit: Boolean) {
+    Canvas(Modifier.size(28.dp)) {
+        val inset = if (exit) size.width * .28f else 0f
+        val reach = size.width * .32f
+        val stroke = 2.dp.toPx()
+        fun corner(x: Float, y: Float, dx: Float, dy: Float) {
+            drawLine(Color.White, Offset(x, y), Offset(x + dx * reach, y), stroke, StrokeCap.Square)
+            drawLine(Color.White, Offset(x, y), Offset(x, y + dy * reach), stroke, StrokeCap.Square)
+        }
+        if (exit) {
+            corner(inset, inset, 1f, 1f); corner(size.width - inset, inset, -1f, 1f)
+            corner(inset, size.height - inset, 1f, -1f); corner(size.width - inset, size.height - inset, -1f, -1f)
+        } else {
+            corner(0f, 0f, 1f, 1f); corner(size.width, 0f, -1f, 1f)
+            corner(0f, size.height, 1f, -1f); corner(size.width, size.height, -1f, -1f)
+        }
+    }
+}
+
+private fun formatMediaTime(milliseconds: Long): String {
+    val totalSeconds = (milliseconds.coerceAtLeast(0L) / 1_000L)
+    val hours = totalSeconds / 3_600L
+    val minutes = (totalSeconds % 3_600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 private fun PlaybackException.isAuthenticationFailure(): Boolean {

@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -18,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -26,15 +28,15 @@ import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.session.SessionRepository
 import java.io.BufferedInputStream
 import java.io.Closeable
+import java.io.File
 import java.io.InputStream
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
 import java.io.PushbackInputStream
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private const val TEXT_PAGE_BYTES = 128 * 1024
-private const val MAX_RETAINED_TEXT_PAGES = 8
+private const val MAX_RETAINED_TEXT_PAGES = 32
 
 data class TextPage(val text: String)
 internal data class RenderedTextPage(val id: Long, val page: TextPage)
@@ -109,28 +111,52 @@ internal fun TextPreview(
     onError: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val input = remember(profile.id, item.path) { PipedInputStream(TEXT_PAGE_BYTES) }
-    val pager = remember(input) { TextPager(input) }
-    val pages = remember(pager) { mutableStateListOf<RenderedTextPage>() }
-    var exhausted by remember(pager) { mutableStateOf(false) }
-    var nextPageId by remember(pager) { mutableStateOf(0L) }
-
-    DisposableEffect(pager) {
-        onDispose(pager::close)
+    val context = LocalContext.current
+    val previewFile = remember(profile.id, item.path) {
+        File(context.cacheDir, "text-preview-${UUID.randomUUID()}.tmp")
     }
-    LaunchedEffect(profile.id, item.path, input) {
-        withContext(Dispatchers.IO) {
-            sessionRepository.downloadTo(profile, item.path, openDestination = { PipedOutputStream(input) })
-        }.onFailure { onError(it.message ?: "Unable to load text preview") }
+    var pager by remember(profile.id, item.path) { mutableStateOf<TextPager?>(null) }
+    val pages = remember(profile.id, item.path) { mutableStateListOf<RenderedTextPage>() }
+    var exhausted by remember(profile.id, item.path) { mutableStateOf(false) }
+    var nextPageId by remember(profile.id, item.path) { mutableStateOf(0L) }
+
+    DisposableEffect(profile.id, item.path) {
+        onDispose {
+            pager?.close()
+            previewFile.delete()
+        }
+    }
+    LaunchedEffect(profile.id, item.path) {
+        val result = withContext(Dispatchers.IO) {
+            sessionRepository.download(profile, item.path, previewFile)
+        }
+        result
+            .onSuccess { downloaded -> pager = TextPager(downloaded.inputStream()) }
+            .onFailure {
+                exhausted = true
+                onError(it.message ?: "Unable to load text preview")
+            }
     }
 
     TextPreviewPageList(pages, modifier) {
-        if (!exhausted) {
-            LaunchedEffect(pager, nextPageId) {
-                pager.loadNext()?.let { page ->
-                    if (pages.size == MAX_RETAINED_TEXT_PAGES) pages.removeAt(0)
-                    pages.add(RenderedTextPage(nextPageId++, page))
-                } ?: run { exhausted = true }
+        val activePager = pager
+        if (activePager == null && !exhausted) {
+            CircularProgressIndicator()
+        } else if (activePager != null && !exhausted) {
+            LaunchedEffect(activePager, nextPageId) {
+                runCatching { activePager.loadNext() }
+                    .onSuccess { page ->
+                        if (page == null) {
+                            exhausted = true
+                        } else {
+                            if (pages.size == MAX_RETAINED_TEXT_PAGES) pages.removeAt(0)
+                            pages.add(RenderedTextPage(nextPageId++, page))
+                        }
+                    }
+                    .onFailure {
+                        exhausted = true
+                        onError(it.message ?: "Unable to read text preview")
+                    }
             }
         }
     }

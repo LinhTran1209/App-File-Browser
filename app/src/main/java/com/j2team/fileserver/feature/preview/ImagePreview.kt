@@ -6,6 +6,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -18,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.dp
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -51,9 +54,36 @@ private fun sampleSize(width: Int, height: Int, requestedWidth: Int, requestedHe
 }
 
 @Composable
-internal fun ImagePreview(file: File, description: String, modifier: Modifier = Modifier) {
-    BoxWithConstraints(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        val density = LocalDensity.current
+internal fun ImagePreview(
+    file: File,
+    description: String,
+    modifier: Modifier = Modifier,
+    onSwipeUp: (() -> Unit)? = null,
+    onSwipeDown: (() -> Unit)? = null,
+) {
+    val density = LocalDensity.current
+    val swipeThreshold = with(density) { 72.dp.toPx() }
+    var dragDistance by remember(file) { mutableStateOf(0f) }
+    BoxWithConstraints(
+        modifier = modifier.fillMaxSize().pointerInput(file, onSwipeUp, onSwipeDown) {
+            detectVerticalDragGestures(
+                onDragStart = { dragDistance = 0f },
+                onVerticalDrag = { change, amount ->
+                    change.consume()
+                    dragDistance += amount
+                },
+                onDragEnd = {
+                    when {
+                        dragDistance <= -swipeThreshold -> onSwipeUp?.invoke()
+                        dragDistance >= swipeThreshold -> onSwipeDown?.invoke()
+                    }
+                    dragDistance = 0f
+                },
+                onDragCancel = { dragDistance = 0f },
+            )
+        },
+        contentAlignment = Alignment.Center,
+    ) {
         val targetWidth = with(density) { maxWidth.roundToPx().coerceAtLeast(1) }
         val targetHeight = with(density) { maxHeight.roundToPx().coerceAtLeast(1) }
         var bitmap by remember(file, targetWidth, targetHeight) { mutableStateOf<Bitmap?>(null) }
