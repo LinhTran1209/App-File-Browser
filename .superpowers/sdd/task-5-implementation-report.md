@@ -18,8 +18,15 @@
 ## Review follow-up
 
 - `PreviewScreen` now obtains an authenticated 64 KiB range probe before routing. It combines the probe's UTF-8 sample with the server `Content-Type` (and optional listed MIME metadata), so extensionless binaries remain unsupported while text is previewed and MPEG-TS wins over the ambiguous `.ts` suffix.
-- The streaming download loop checks coroutine cancellation between chunks, closes its streams, disconnects the HTTP connection, and rethrows cancellation rather than showing a pipe-close error.
-- PDF and image bitmap allocation now has explicit unpublished-bitmap cleanup; cancellation is never converted into a preview error. PDF page generation uses the count-based lazy API.
+- The streaming download uses a public-API cancellable worker bridge: the complete `HttpURLConnection` transfer runs on `Dispatchers.IO`, while `invokeOnCancellation` atomically marks the request cancelled before taking and closing its published owner. The worker checks that flag before opening a connection and immediately after publishing one, so a handler that initially observes no resource cannot miss a later connection. The caller receives cancellation promptly; a detached native HTTP read is still bounded by the configured 15-second read timeout if close/disconnect cannot wake that runtime's primitive. `FileMutationRequestTest` covers both pre-publication ownership and a server-held mid-read cancellation.
+- PDF and image bitmap allocation now keeps an explicit unpublished owner until Compose's `DisposableEffect` takes ownership. PDF rendering does not publish a bitmap until `page.render` returns, so disposal cannot recycle it while the renderer uses it; render/decode failures and post-render cancellation recycle exactly once. `RenderOwnerTest` covers publication after prior disposal. PDF page generation uses the count-based lazy API.
+- MIME selection now combines listed metadata and probe headers, treating `video/mp2t` as a recognized specific type ahead of generic probe values. `PreviewRouterTest` covers both metadata/probe orders.
+
+## Final review verification
+
+- `testDebugUnitTest --tests "*PreviewRouterTest" --tests "*TextPagerTest" --tests "*FileMutationRequestTest"` passed using the repository portable JDK 17 and Android SDK.
+- The focused cancellation test was first observed failing with an `ApiResult` instead of `CancellationException`; it passes after the lifecycle fix.
+- `PdfPreview.kt` compiled in the same fresh Kotlin compile, so Compose's count-based `items` overload is available without an additional import in this dependency version.
 
 ## Known constraint
 
