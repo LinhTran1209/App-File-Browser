@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
+import java.util.concurrent.atomic.AtomicReference
 
 internal fun decodeSampledImage(file: File, requestedWidth: Int, requestedHeight: Int): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -34,6 +35,13 @@ internal fun decodeSampledImage(file: File, requestedWidth: Int, requestedHeight
         inPreferredConfig = Bitmap.Config.ARGB_8888
     }
     return BitmapFactory.decodeFile(file.path, options)
+}
+
+private suspend fun decodeSampledImageOwned(file: File, width: Int, height: Int, owner: AtomicReference<Bitmap?>): Bitmap? {
+    val bitmap = decodeSampledImage(file, width, height)
+    owner.set(bitmap)
+    coroutineContext.ensureActive()
+    return bitmap
 }
 
 private fun sampleSize(width: Int, height: Int, requestedWidth: Int, requestedHeight: Int): Int {
@@ -49,22 +57,28 @@ internal fun ImagePreview(file: File, description: String, modifier: Modifier = 
         val targetWidth = with(density) { maxWidth.roundToPx().coerceAtLeast(1) }
         val targetHeight = with(density) { maxHeight.roundToPx().coerceAtLeast(1) }
         var bitmap by remember(file, targetWidth, targetHeight) { mutableStateOf<Bitmap?>(null) }
+        val unpublishedBitmap = remember(file, targetWidth, targetHeight) { AtomicReference<Bitmap?>(null) }
+
+        DisposableEffect(unpublishedBitmap) {
+            onDispose {
+                unpublishedBitmap.getAndSet(null)?.let { if (!it.isRecycled) it.recycle() }
+            }
+        }
 
         LaunchedEffect(file, targetWidth, targetHeight) {
-            val decoded = withContext(Dispatchers.IO) {
-                val candidate = decodeSampledImage(file, targetWidth, targetHeight)
-                try {
-                    coroutineContext.ensureActive()
-                    candidate
-                } catch (error: Throwable) {
-                    candidate?.recycle()
-                    throw error
+            var published = false
+            try {
+                bitmap = withContext(Dispatchers.IO) {
+                    decodeSampledImageOwned(file, targetWidth, targetHeight, unpublishedBitmap)
                 }
+                published = true
+            } finally {
+                if (!published) unpublishedBitmap.getAndSet(null)?.let { if (!it.isRecycled) it.recycle() }
             }
-            bitmap = decoded
         }
         bitmap?.let { decoded ->
             DisposableEffect(decoded) {
+                unpublishedBitmap.compareAndSet(decoded, null)
                 onDispose { if (!decoded.isRecycled) decoded.recycle() }
             }
             Image(

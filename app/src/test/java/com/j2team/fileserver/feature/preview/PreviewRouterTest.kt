@@ -59,6 +59,12 @@ class PreviewRouterTest {
     }
 
     @Test
+    fun prefersSpecificTransportMimeOverGenericProbeMime() {
+        assertEquals("video/mp2t", PreviewRouter.preferredMimeType("video/mp2t", "application/octet-stream"))
+        assertEquals("video/mp2t", PreviewRouter.preferredMimeType("application/octet-stream", "video/mp2t"))
+    }
+
+    @Test
     fun suppliesConsistentMimeTypes() {
         assertEquals("application/pdf", PreviewRouter.mimeType("manual.PDF"))
         assertEquals("text/markdown", PreviewRouter.mimeType("notes.md"))

@@ -1,15 +1,70 @@
 package com.j2team.fileserver.core.network
 
 import com.j2team.fileserver.core.model.ServerProfile
+import java.io.ByteArrayOutputStream
+import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.net.InetSocketAddress
 import com.sun.net.httpserver.HttpServer
+import java.util.concurrent.atomic.AtomicReference
 
 class FileMutationRequestTest {
+    @Test
+    fun downloadCancellationInterruptsBlockedReadAndRethrowsCancellation() = runTest {
+        val firstByteCopied = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                // A chunked body lets the client obtain an InputStream, then blocks its first read.
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.write(1)
+                exchange.responseBody.flush()
+                release.await(5, TimeUnit.SECONDS)
+                exchange.close()
+            }
+            start()
+        }
+        try {
+            val outcome = AtomicReference<Throwable?>()
+            val completed = CountDownLatch(1)
+            val download = launch(Dispatchers.Default) {
+                try {
+                    FileBrowserClient().downloadToResult(
+                        profile = profile(server),
+                        token = "token",
+                        remotePath = "/blocked",
+                        openDestination = { ByteArrayOutputStream() },
+                        onProgress = { copied, _ -> if (copied > 0) firstByteCopied.countDown() },
+                    )
+                    outcome.set(null)
+                } catch (error: Throwable) {
+                    outcome.set(error)
+                } finally {
+                    completed.countDown()
+                }
+            }
+
+            assertTrue("The client never started its second, blocked read", firstByteCopied.await(2, TimeUnit.SECONDS))
+            val cancellationStarted = System.nanoTime()
+            download.cancel()
+            assertTrue("Cancellation waited for the peer", completed.await(2, TimeUnit.SECONDS))
+            val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cancellationStarted)
+            assertTrue(outcome.get() is CancellationException)
+            assertTrue("Cancellation waited ${elapsedMillis}ms for the peer", elapsedMillis < 2_000)
+        } finally {
+            release.countDown()
+            server.stop(0)
+        }
+    }
+
     @Test
     fun previewProbeUsesAuthenticatedBoundedRangeAndPreservesContentType() = runTest {
         withServer { request ->

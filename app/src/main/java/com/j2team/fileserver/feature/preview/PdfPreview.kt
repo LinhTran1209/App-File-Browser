@@ -31,6 +31,9 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
+import java.util.concurrent.atomic.AtomicReference
 
 private class PdfDocument(private val file: File) : Closeable {
     private var descriptor: ParcelFileDescriptor? = null
@@ -57,14 +60,17 @@ private class PdfDocument(private val file: File) : Closeable {
         }
     }
 
-    suspend fun pageBitmap(index: Int, width: Int): Bitmap = withContext(Dispatchers.IO) {
+    suspend fun pageBitmap(index: Int, width: Int, owner: AtomicReference<Bitmap?>): Bitmap = withContext(Dispatchers.IO) {
         synchronized(this@PdfDocument) {
             renderer.orThrow().openPage(index).use { page ->
                 val height = (page.height.toFloat() / page.width * width).toInt().coerceAtLeast(1)
                 Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
+                    owner.set(bitmap)
                     try {
                     page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    coroutineContext.ensureActive()
                     } catch (error: Throwable) {
+                        owner.compareAndSet(bitmap, null)
                         bitmap.recycle()
                         throw error
                     }
@@ -121,13 +127,27 @@ private fun PdfPage(document: PdfDocument, index: Int) {
         val width = with(LocalDensity.current) { maxWidth.roundToPx().coerceAtLeast(1) }
         var bitmap by remember(document, index, width) { mutableStateOf<Bitmap?>(null) }
         var error by remember(document, index, width) { mutableStateOf<String?>(null) }
+        val unpublishedBitmap = remember(document, index, width) { AtomicReference<Bitmap?>(null) }
+        DisposableEffect(unpublishedBitmap) {
+            onDispose {
+                unpublishedBitmap.getAndSet(null)?.let { if (!it.isRecycled) it.recycle() }
+            }
+        }
         LaunchedEffect(document, index, width) {
-            runCatching { document.pageBitmap(index, width) }
-                .onSuccess { bitmap = it }
-                .onFailure { if (it is CancellationException) throw it; error = it.message ?: "Unable to render page ${index + 1}" }
+            var published = false
+            try {
+                bitmap = document.pageBitmap(index, width, unpublishedBitmap)
+                published = true
+            } catch (failure: Throwable) {
+                if (failure is CancellationException) throw failure
+                error = failure.message ?: "Unable to render page ${index + 1}"
+            } finally {
+                if (!published) unpublishedBitmap.getAndSet(null)?.let { if (!it.isRecycled) it.recycle() }
+            }
         }
         bitmap?.let {
             DisposableEffect(it) {
+                unpublishedBitmap.compareAndSet(it, null)
                 onDispose { if (!it.isRecycled) it.recycle() }
             }
             Image(it.asImageBitmap(), "PDF page ${index + 1}", modifier = Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth)

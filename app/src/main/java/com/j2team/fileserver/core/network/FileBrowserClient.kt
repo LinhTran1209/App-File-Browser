@@ -16,9 +16,10 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Base64
-import java.util.concurrent.CancellationException
-import kotlinx.coroutines.ensureActive
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.EmptyCoroutineContext
+import java.util.concurrent.atomic.AtomicReference
 
 data class PreviewProbe(val mimeType: String?, val sample: ByteArray)
 
@@ -79,37 +80,52 @@ class FileBrowserClient {
         remotePath: String,
         openDestination: () -> OutputStream,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
-    ): ApiResult<Unit> {
-        var connection: HttpURLConnection? = null
-        return try {
-        require(remotePath.isNotBlank()) { "Remote path is required" }
-        connection = open(rawUrl(profile, remotePath), "GET")
-        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
-        val code = connection.responseCode
-        if (code !in 200..299) return ApiResult(code, error = IOException("Download failed ($code)"))
-        val total = connection.contentLengthLong
-        var copied = 0L
-        connection.inputStream.use { input ->
-            openDestination().use { output ->
-                val buffer = ByteArray(8 * 1024)
-                while (true) {
-                    coroutineContext.ensureActive()
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    output.write(buffer, 0, count)
-                    copied += count
-                    onProgress?.invoke(copied, total)
-                }
-            }
+    ): ApiResult<Unit> = suspendCancellableCoroutine { continuation ->
+        val activeConnection = AtomicReference<HttpURLConnection?>(null)
+        val activeInput = AtomicReference<InputStream?>(null)
+        val activeOutput = AtomicReference<OutputStream?>(null)
+        val cancelActiveRequest = {
+            activeInput.get()?.runCatching { close() }
+            activeOutput.get()?.runCatching { close() }
+            activeConnection.get()?.disconnect()
+            Unit
         }
-        ApiResult(code, Unit)
-    } catch (error: CancellationException) {
-        throw error
-    } catch (error: Throwable) {
-        ApiResult(-1, error = error)
-    } finally {
-        connection?.disconnect()
-    }
+        continuation.invokeOnCancellation {
+            Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable { cancelActiveRequest() })
+        }
+        Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable {
+            val result = try {
+                require(remotePath.isNotBlank()) { "Remote path is required" }
+                val connection = open(rawUrl(profile, remotePath), "GET")
+                activeConnection.set(connection)
+                if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+                val code = connection.responseCode
+                if (code !in 200..299) ApiResult(code, error = IOException("Download failed ($code)")) else {
+                    val total = connection.contentLengthLong
+                    var copied = 0L
+                    connection.inputStream.use { input ->
+                        activeInput.set(input)
+                        openDestination().use { output ->
+                            activeOutput.set(output)
+                            val buffer = ByteArray(8 * 1024)
+                            while (continuation.isActive) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                copied += count
+                                onProgress?.invoke(copied, total)
+                            }
+                        }
+                    }
+                    ApiResult(code, Unit)
+                }
+            } catch (error: Throwable) {
+                ApiResult(-1, error = error)
+            } finally {
+                activeConnection.getAndSet(null)?.disconnect()
+            }
+            if (continuation.isActive) continuation.resumeWith(Result.success(result))
+        })
     }
 
     /** Reads only a bounded, authenticated prefix and preserves the server Content-Type for preview routing. */

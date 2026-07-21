@@ -62,7 +62,10 @@ internal fun PreviewScreen(
     }
     LaunchedEffect(profile.id, item.path) {
         withContext(Dispatchers.IO) { sessionRepository.previewProbe(profile, item.path) }
-            .onSuccess { probe -> kind = PreviewRouter.kind(item.name, probe.sample, probe.mimeType ?: item.mimeType) }
+            .onSuccess { probe ->
+                val mimeType = PreviewRouter.preferredMimeType(item.mimeType, probe.mimeType)
+                kind = PreviewRouter.kind(item.name, probe.sample, mimeType)
+            }
             .onFailure { error = it.message ?: "Unable to inspect preview" }
     }
     LaunchedEffect(profile.id, item.path, kind, temporaryFile) {

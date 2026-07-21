@@ -95,6 +95,17 @@ object PreviewRouter {
 
     fun canPreview(name: String): Boolean = kind(name) != PreviewKind.Unsupported
 
+    fun preferredMimeType(listed: String?, probed: String?): String? {
+        val normalizedProbe = probed?.substringBefore(';')?.trim()?.lowercase()
+        val normalizedListed = listed?.substringBefore(';')?.trim()?.lowercase()
+        return when {
+            normalizedProbe == "video/mp2t" -> normalizedProbe
+            normalizedListed == "video/mp2t" -> normalizedListed
+            normalizedProbe != null && normalizedProbe !in setOf("application/octet-stream", "text/plain") -> normalizedProbe
+            else -> normalizedListed ?: normalizedProbe
+        }
+    }
+
     private fun ByteArray.isLikelyUtf8Text(): Boolean {
         if (any { it == 0.toByte() }) return false
         return try {
