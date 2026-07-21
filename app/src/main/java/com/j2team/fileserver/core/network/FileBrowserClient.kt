@@ -19,9 +19,34 @@ import java.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.EmptyCoroutineContext
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 data class PreviewProbe(val mimeType: String?, val sample: ByteArray)
+
+/** Atomically pairs cancellation with publication of resources that must be closed. */
+internal class CancellableRequestOwner {
+    private val cancelled = AtomicBoolean(false)
+    private val cleanup = AtomicReference<(() -> Unit)?>(null)
+
+    fun cancel(): (() -> Unit)? {
+        cancelled.set(true)
+        return cleanup.getAndSet(null)
+    }
+
+    fun publish(close: () -> Unit): Boolean {
+        cleanup.set(close)
+        if (!cancelled.get()) return true
+        cleanup.getAndSet(null)?.invoke()
+        return false
+    }
+
+    fun clear() {
+        cleanup.set(null)
+    }
+
+    fun isCancelled(): Boolean = cancelled.get()
+}
 
 class FileBrowserClient {
     /** Downloads a remote resource to [destination] without buffering it in memory. */
@@ -84,20 +109,29 @@ class FileBrowserClient {
         val activeConnection = AtomicReference<HttpURLConnection?>(null)
         val activeInput = AtomicReference<InputStream?>(null)
         val activeOutput = AtomicReference<OutputStream?>(null)
+        val requestOwner = CancellableRequestOwner()
         val cancelActiveRequest = {
+            val cleanup = requestOwner.cancel()
+            if (cleanup != null) Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable { cleanup() })
+            Unit
+        }
+        val closeActiveRequest = {
             activeInput.get()?.runCatching { close() }
             activeOutput.get()?.runCatching { close() }
             activeConnection.get()?.disconnect()
             Unit
         }
         continuation.invokeOnCancellation {
-            Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable { cancelActiveRequest() })
+            cancelActiveRequest()
         }
         Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable {
             val result = try {
+                if (requestOwner.isCancelled()) return@Runnable
                 require(remotePath.isNotBlank()) { "Remote path is required" }
                 val connection = open(rawUrl(profile, remotePath), "GET")
                 activeConnection.set(connection)
+                if (!requestOwner.publish(closeActiveRequest)) return@Runnable
+                if (requestOwner.isCancelled()) return@Runnable
                 if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
                 val code = connection.responseCode
                 if (code !in 200..299) ApiResult(code, error = IOException("Download failed ($code)")) else {
@@ -122,6 +156,7 @@ class FileBrowserClient {
             } catch (error: Throwable) {
                 ApiResult(-1, error = error)
             } finally {
+                requestOwner.clear()
                 activeConnection.getAndSet(null)?.disconnect()
             }
             if (continuation.isActive) continuation.resumeWith(Result.success(result))

@@ -33,7 +33,28 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+
+internal class RenderOwner<T>(private val recycle: (T) -> Unit) {
+    private val value = AtomicReference<T?>(null)
+    private val released = AtomicBoolean(false)
+
+    /** Call only after the renderer has completely finished using [rendered]. */
+    fun publishAfterRender(rendered: T): Boolean {
+        value.set(rendered)
+        if (!released.get()) return true
+        value.getAndSet(null)?.let(recycle)
+        return false
+    }
+
+    fun clearIf(rendered: T): T? = if (value.compareAndSet(rendered, null)) rendered else null
+
+    fun release() {
+        released.set(true)
+        value.getAndSet(null)?.let(recycle)
+    }
+}
 
 private class PdfDocument(private val file: File) : Closeable {
     private var descriptor: ParcelFileDescriptor? = null
@@ -60,18 +81,19 @@ private class PdfDocument(private val file: File) : Closeable {
         }
     }
 
-    suspend fun pageBitmap(index: Int, width: Int, owner: AtomicReference<Bitmap?>): Bitmap = withContext(Dispatchers.IO) {
+    suspend fun pageBitmap(index: Int, width: Int, owner: RenderOwner<Bitmap>): Bitmap = withContext(Dispatchers.IO) {
         synchronized(this@PdfDocument) {
             renderer.orThrow().openPage(index).use { page ->
                 val height = (page.height.toFloat() / page.width * width).toInt().coerceAtLeast(1)
                 Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
-                    owner.set(bitmap)
                     try {
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    coroutineContext.ensureActive()
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        if (!owner.publishAfterRender(bitmap)) throw CancellationException("PDF page was disposed")
+                        coroutineContext.ensureActive()
                     } catch (error: Throwable) {
-                        owner.compareAndSet(bitmap, null)
-                        bitmap.recycle()
+                        val ownedBitmap = owner.clearIf(bitmap)
+                        if (ownedBitmap != null) ownedBitmap.recycle()
+                        else if (!bitmap.isRecycled) bitmap.recycle()
                         throw error
                     }
                 }
@@ -127,11 +149,9 @@ private fun PdfPage(document: PdfDocument, index: Int) {
         val width = with(LocalDensity.current) { maxWidth.roundToPx().coerceAtLeast(1) }
         var bitmap by remember(document, index, width) { mutableStateOf<Bitmap?>(null) }
         var error by remember(document, index, width) { mutableStateOf<String?>(null) }
-        val unpublishedBitmap = remember(document, index, width) { AtomicReference<Bitmap?>(null) }
+        val unpublishedBitmap = remember(document, index, width) { RenderOwner<Bitmap> { if (!it.isRecycled) it.recycle() } }
         DisposableEffect(unpublishedBitmap) {
-            onDispose {
-                unpublishedBitmap.getAndSet(null)?.let { if (!it.isRecycled) it.recycle() }
-            }
+            onDispose(unpublishedBitmap::release)
         }
         LaunchedEffect(document, index, width) {
             var published = false
@@ -142,12 +162,12 @@ private fun PdfPage(document: PdfDocument, index: Int) {
                 if (failure is CancellationException) throw failure
                 error = failure.message ?: "Unable to render page ${index + 1}"
             } finally {
-                if (!published) unpublishedBitmap.getAndSet(null)?.let { if (!it.isRecycled) it.recycle() }
+                if (!published) unpublishedBitmap.release()
             }
         }
         bitmap?.let {
             DisposableEffect(it) {
-                unpublishedBitmap.compareAndSet(it, null)
+                unpublishedBitmap.clearIf(it)
                 onDispose { if (!it.isRecycled) it.recycle() }
             }
             Image(it.asImageBitmap(), "PDF page ${index + 1}", modifier = Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth)

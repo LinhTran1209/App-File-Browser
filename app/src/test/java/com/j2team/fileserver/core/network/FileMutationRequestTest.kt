@@ -18,6 +18,16 @@ import java.util.concurrent.atomic.AtomicReference
 
 class FileMutationRequestTest {
     @Test
+    fun cancellationBeforePublicationClosesTheLateRequestOwner() {
+        var closed = 0
+        val owner = CancellableRequestOwner()
+
+        assertEquals(null, owner.cancel())
+        assertFalse(owner.publish { closed += 1 })
+        assertEquals(1, closed)
+    }
+
+    @Test
     fun downloadCancellationInterruptsBlockedReadAndRethrowsCancellation() = runTest {
         val firstByteCopied = CountDownLatch(1)
         val release = CountDownLatch(1)
