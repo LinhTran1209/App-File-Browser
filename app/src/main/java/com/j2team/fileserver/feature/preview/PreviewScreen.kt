@@ -38,6 +38,9 @@ import kotlinx.coroutines.withContext
 
 private const val INLINE_TEXT_LIMIT_BYTES = 2L * 1024 * 1024
 
+internal fun requiresDownloadedFile(kind: PreviewKind): Boolean =
+    kind == PreviewKind.Pdf || kind == PreviewKind.Image
+
 @Composable
 internal fun PreviewScreen(
     profile: ServerProfile,
@@ -67,7 +70,7 @@ internal fun PreviewScreen(
             .onFailure { error = it.message ?: "Unable to inspect preview" }
     }
     LaunchedEffect(profile.id, item.path, kind, temporaryFile) {
-        if (kind == null || kind == PreviewKind.Unsupported || kind == PreviewKind.Text || kind == PreviewKind.Video || kind == PreviewKind.Audio) return@LaunchedEffect
+        if (kind == null || !requiresDownloadedFile(kind!!)) return@LaunchedEffect
         withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, temporaryFile) }
             .onSuccess { downloadedFile = it }
             .onFailure {
@@ -93,16 +96,15 @@ internal fun PreviewScreen(
                     sessionRepository = sessionRepository,
                     onError = { error = it },
                 )
-                downloadedFile == null -> CircularProgressIndicator()
-                kind == PreviewKind.Pdf -> PdfPreview(downloadedFile!!)
-                kind == PreviewKind.Image -> ImagePreview(downloadedFile!!, item.name)
                 kind == PreviewKind.Video || kind == PreviewKind.Audio -> MediaPreview(
                     profile = profile,
                     item = item,
                     declaredMimeType = resolvedMimeType,
                     sessionRepository = sessionRepository,
-                    onError = { error = it },
                 )
+                requiresDownloadedFile(kind!!) && downloadedFile == null -> CircularProgressIndicator()
+                kind == PreviewKind.Pdf -> PdfPreview(downloadedFile!!)
+                kind == PreviewKind.Image -> ImagePreview(downloadedFile!!, item.name)
             }
         }
         Text(

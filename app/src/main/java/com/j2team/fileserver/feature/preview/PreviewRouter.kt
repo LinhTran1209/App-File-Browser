@@ -45,6 +45,12 @@ object PreviewRouter {
 
     fun kind(name: String, sample: ByteArray, declaredMimeType: String?): PreviewKind {
         if (declaredMimeType?.lowercase() == "video/mp2t") return PreviewKind.Video
+        if (extension(name) == "ts") {
+            return when (declaredMimeType?.lowercase()) {
+                "text/typescript", "application/typescript" -> PreviewKind.Text
+                else -> if (sample.isLikelyUtf8Text()) PreviewKind.Text else PreviewKind.Video
+            }
+        }
         if (extension(name).isEmpty()) return kind(name, sample)
         return kind(name, declaredMimeType)
     }

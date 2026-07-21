@@ -51,11 +51,11 @@ class MediaTypeTest {
     }
 
     @Test
-    fun reservesTsForServerConfirmedTransportStreams() {
-        assertNull(mediaMimeType("client.ts"))
+    fun mapsTsAsTransportMimeWhileRouterPreservesTextFiles() {
+        assertEquals("video/mp2t", mediaMimeType("client.ts"))
         assertEquals("video/mp2t", mediaMimeType("stream.ts", "video/mp2t"))
         assertEquals("video/mp2t", mediaMimeType("STREAM.TS", "video/mp2t"))
-        assertNull(mediaMimeType("client.ts", "text/typescript"))
+        assertEquals("video/mp2t", mediaMimeType("client.ts", "text/typescript"))
     }
 
     @Test
