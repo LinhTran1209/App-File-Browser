@@ -29,3 +29,4 @@
 - Restored the required `.ts` Media MIME mapping while using the bounded preview sample and declared MIME to keep TypeScript text previews as text.
 - Added pure tests for preview render policy, one-shot retry/reprepare decision, fallback cleanup paths, and `.ts` text/binary routing; added loading, seek/progress, play/pause, semantic labels, and saved playback position controls.
 - Added `StreamRetryState.reprepareGeneration`, which increments after every successful authorized renewal and keys Media3 player construction independently from token equality; the test covers an identical renewed token and verifies a second 401 surfaces the local error instead of another retry.
+- Keyed all retry/player session state by the profile ID plus remote path, so a profile switch on the same path gets a fresh one-shot renewal while recomposition within the same profile/path preserves the active retry state.

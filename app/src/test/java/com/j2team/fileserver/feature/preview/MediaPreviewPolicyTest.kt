@@ -37,6 +37,16 @@ class MediaPreviewPolicyTest {
     }
 
     @Test
+    fun sessionStateKeyResetsRetryForAnotherProfileButIsStableForRecomposition() {
+        val profileA = mediaSessionStateKey("profile-a", "/shared/movie.mp4")
+        val profileARecomposition = mediaSessionStateKey("profile-a", "/shared/movie.mp4")
+        val profileB = mediaSessionStateKey("profile-b", "/shared/movie.mp4")
+
+        assertEquals(profileA, profileARecomposition)
+        assertFalse(profileA == profileB)
+    }
+
+    @Test
     fun cleanupIncludesBothFinalAndPartialFallbackFiles() {
         val destination = File("cache/media/episode.mp4")
 

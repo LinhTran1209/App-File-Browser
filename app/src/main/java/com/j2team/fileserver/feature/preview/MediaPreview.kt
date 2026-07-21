@@ -83,6 +83,8 @@ internal data class StreamRetryState(
 internal fun mediaStreamConfiguration(token: String): MediaStreamConfiguration =
     MediaStreamConfiguration(headers = mapOf("X-Auth" to token))
 
+internal fun mediaSessionStateKey(profileId: String, remotePath: String): String = "$profileId\u0000$remotePath"
+
 internal fun streamFailureAction(
     isAuthenticationFailure: Boolean,
     retryUsed: Boolean,
@@ -171,14 +173,15 @@ internal fun MediaPreview(
     val externalError = stringResource(R.string.media_external_error)
     val loadingDescription = stringResource(R.string.media_loading)
     val mimeType = remember(item.name, declaredMimeType) { mediaMimeType(item.name, declaredMimeType) }
-    var token by remember(profile.id, item.path) { mutableStateOf<String?>(null) }
-    var localError by remember(item.path) { mutableStateOf<String?>(null) }
-    var retryState by remember(item.path) { mutableStateOf(StreamRetryState()) }
-    var isOpeningExternally by remember(item.path) { mutableStateOf(false) }
-    var fallbackJob by remember(item.path) { mutableStateOf<Job?>(null) }
-    var savedPositionMs by rememberSaveable(item.path) { mutableLongStateOf(0L) }
-    val disposed = remember(item.path) { AtomicBoolean(false) }
-    val externalFile = remember(item.path) {
+    val sessionStateKey = remember(profile.id, item.path) { mediaSessionStateKey(profile.id, item.path) }
+    var token by remember(sessionStateKey) { mutableStateOf<String?>(null) }
+    var localError by remember(sessionStateKey) { mutableStateOf<String?>(null) }
+    var retryState by remember(sessionStateKey) { mutableStateOf(StreamRetryState()) }
+    var isOpeningExternally by remember(sessionStateKey) { mutableStateOf(false) }
+    var fallbackJob by remember(sessionStateKey) { mutableStateOf<Job?>(null) }
+    var savedPositionMs by rememberSaveable(sessionStateKey) { mutableLongStateOf(0L) }
+    val disposed = remember(sessionStateKey) { AtomicBoolean(false) }
+    val externalFile = remember(sessionStateKey) {
         File(context.cacheDir, "media/${UUID.randomUUID()}-${item.name.substringAfterLast('/').replace('\\', '_')}")
     }
 
