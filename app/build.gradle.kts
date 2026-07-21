@@ -44,6 +44,9 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation("androidx.documentfile:documentfile:1.1.0")
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui.compose)
+    implementation(libs.media3.datasource.okhttp)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

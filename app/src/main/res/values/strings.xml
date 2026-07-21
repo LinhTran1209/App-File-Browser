@@ -61,4 +61,10 @@
     <string name="dismiss">Dismiss</string>
     <string name="browser_actions">File actions</string>
     <string name="browser_actions_long_press">Long press to show file actions</string>
+    <string name="media_preview_error">Kh&#244;ng th&#7875; ph&#225;t t&#7879;p &#273;a ph&#432;&#417;ng ti&#7879;n n&#224;y. H&#227;y th&#7917; m&#7903; b&#7857;ng &#7913;ng d&#7909;ng kh&#225;c.</string>
+    <string name="media_preview_auth_error">Phi&#234;n &#273;&#259;ng nh&#7853;p c&#7911;a b&#7841;n &#273;&#227; h&#7871;t h&#7841;n. Vui l&#242;ng &#273;&#259;ng nh&#7853;p l&#7841;i.</string>
+    <string name="media_open_with">M&#7903; b&#7857;ng &#7913;ng d&#7909;ng kh&#225;c</string>
+    <string name="media_external_error">Kh&#244;ng th&#7875; m&#7903; t&#7879;p &#273;a ph&#432;&#417;ng ti&#7879;n b&#7857;ng &#7913;ng d&#7909;ng kh&#225;c.</string>
+    <string name="media_play">Ph&#225;t</string>
+    <string name="media_pause">T&#7841;m d&#7915;ng</string>
 </resources>

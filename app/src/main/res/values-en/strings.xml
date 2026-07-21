@@ -61,4 +61,10 @@
     <string name="dismiss">Dismiss</string>
     <string name="browser_actions">File actions</string>
     <string name="browser_actions_long_press">Long press to show file actions</string>
+    <string name="media_preview_error">Can\'t play this media file. You can try another app.</string>
+    <string name="media_preview_auth_error">Your session expired. Please sign in again.</string>
+    <string name="media_open_with">Open with another app</string>
+    <string name="media_external_error">Couldn\'t open the media file in another app.</string>
+    <string name="media_play">Play</string>
+    <string name="media_pause">Pause</string>
 </resources>

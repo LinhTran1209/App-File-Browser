@@ -40,16 +40,7 @@ class SessionRepository(
         profile: ServerProfile,
         call: suspend (String) -> ApiResult<T>,
     ): Result<T> = SessionPolicy(object : SessionPolicy.TokenRefresher {
-        override suspend fun renew(): Result<String> {
-            val credential = secretStore.get(profile.id)
-                ?: return Result.failure(LoginRequiredException())
-            return try {
-                transport.login(profile, credential.username, credential.password.concatToString())
-                    .onSuccess { tokenStore[profile.id] = it }
-            } finally {
-                credential.password.fill('\u0000')
-            }
-        }
+        override suspend fun renew(): Result<String> = renew(profile)
     }).execute(tokenStore[profile.id].orEmpty(), call)
 
     suspend fun list(profile: ServerProfile, path: String): Result<List<RemoteResource>> =
@@ -95,6 +86,17 @@ class SessionRepository(
     suspend fun readText(profile: ServerProfile, remotePath: String): Result<String> =
         authenticated(profile) { token -> transport.readTextResult(profile, token, remotePath) }
 
+    /** Returns a verified token for an idempotent raw-media GET request. */
+    suspend fun streamingToken(profile: ServerProfile): Result<String> =
+        authenticated(profile) { candidate ->
+            transport.listResult(profile, candidate, profile.basePath).map { candidate }
+        }
+
+    /** A rejected Media3 raw GET can safely be prepared again after this renewal. */
+    suspend fun renewStreamingToken(profile: ServerProfile): Result<String> = renew(profile)
+
+    fun rawUrl(profile: ServerProfile, remotePath: String): String = transport.rawUrl(profile, remotePath)
+
     /** Authenticate with a safe list request before sending a non-idempotent mutation once. */
     suspend fun createDirectory(profile: ServerProfile, path: String): Result<Unit> =
         mutationToken(profile).fold(
@@ -127,6 +129,17 @@ class SessionRepository(
         authenticated(profile) { candidate ->
             transport.listResult(profile, candidate, profile.basePath).map { candidate }
         }
+
+    private fun renew(profile: ServerProfile): Result<String> {
+        val credential = secretStore.get(profile.id)
+            ?: return Result.failure(LoginRequiredException())
+        return try {
+            transport.login(profile, credential.username, credential.password.concatToString())
+                .onSuccess { tokenStore[profile.id] = it }
+        } finally {
+            credential.password.fill('\u0000')
+        }
+    }
 
     fun clear(profileId: String) {
         tokenStore.remove(profileId)

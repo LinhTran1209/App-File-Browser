@@ -1,8 +1,5 @@
 package com.j2team.fileserver.feature.preview
 
-import android.net.Uri
-import android.widget.MediaController
-import android.widget.VideoView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,7 +24,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.R
 import com.j2team.fileserver.formatBytes
@@ -54,6 +50,7 @@ internal fun PreviewScreen(
     var kind by remember(item.path) { mutableStateOf<PreviewKind?>(null) }
     val temporaryFile = remember(item.path) { File(context.cacheDir, "preview-${UUID.randomUUID()}.tmp") }
     var downloadedFile by remember(item.path) { mutableStateOf<File?>(null) }
+    var resolvedMimeType by remember(item.path) { mutableStateOf<String?>(null) }
     var error by remember(item.path) { mutableStateOf<String?>(null) }
     var openLargeText by remember(item.path) { mutableStateOf(false) }
 
@@ -64,12 +61,13 @@ internal fun PreviewScreen(
         withContext(Dispatchers.IO) { sessionRepository.previewProbe(profile, item.path) }
             .onSuccess { probe ->
                 val mimeType = PreviewRouter.preferredMimeType(item.mimeType, probe.mimeType)
+                resolvedMimeType = mimeType
                 kind = PreviewRouter.kind(item.name, probe.sample, mimeType)
             }
             .onFailure { error = it.message ?: "Unable to inspect preview" }
     }
     LaunchedEffect(profile.id, item.path, kind, temporaryFile) {
-        if (kind == null || kind == PreviewKind.Unsupported || kind == PreviewKind.Text) return@LaunchedEffect
+        if (kind == null || kind == PreviewKind.Unsupported || kind == PreviewKind.Text || kind == PreviewKind.Video || kind == PreviewKind.Audio) return@LaunchedEffect
         withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, temporaryFile) }
             .onSuccess { downloadedFile = it }
             .onFailure {
@@ -98,7 +96,13 @@ internal fun PreviewScreen(
                 downloadedFile == null -> CircularProgressIndicator()
                 kind == PreviewKind.Pdf -> PdfPreview(downloadedFile!!)
                 kind == PreviewKind.Image -> ImagePreview(downloadedFile!!, item.name)
-                kind == PreviewKind.Video || kind == PreviewKind.Audio -> LegacyMediaPreview(downloadedFile!!)
+                kind == PreviewKind.Video || kind == PreviewKind.Audio -> MediaPreview(
+                    profile = profile,
+                    item = item,
+                    declaredMimeType = resolvedMimeType,
+                    sessionRepository = sessionRepository,
+                    onError = { error = it },
+                )
             }
         }
         Text(
@@ -107,21 +111,4 @@ internal fun PreviewScreen(
             modifier = Modifier.padding(16.dp),
         )
     }
-}
-
-/** Temporary local media route until the authenticated Media3 stream is introduced. */
-@Composable
-private fun LegacyMediaPreview(file: File) {
-    AndroidView(
-        factory = { context ->
-            VideoView(context).apply {
-                val controller = MediaController(context)
-                controller.setAnchorView(this)
-                setMediaController(controller)
-                setVideoURI(Uri.fromFile(file))
-                setOnPreparedListener { start() }
-            }
-        },
-        modifier = Modifier.fillMaxSize(),
-    )
 }
