@@ -19,7 +19,7 @@ Native Android client for browsing, previewing, and transferring files with a [F
 - Duyệt thư mục theo trang, kéo xuống để làm mới, chuyển đổi danh sách/lưới và chọn bộ biểu tượng thư mục.
 - Tạo thư mục, tải tệp/thư mục lên, tải xuống, di chuyển và xóa nhiều mục theo quyền của máy chủ.
 - Hàng đợi truyền tệp riêng cho Uploads và Downloads, hiển thị tiến trình, retry, mở tệp tải về và xóa toàn bộ lịch sử từng tab.
-- Thumbnail cho ảnh và video; cache cục bộ để giảm tải máy chủ.
+- Thumbnail cho ảnh và video; cache cục bộ tự giới hạn 32 MB, xóa ảnh quá 7 ngày và có thể xóa thủ công trong Cài đặt.
 - Xem ảnh và vuốt giữa các ảnh trong cùng thư mục.
 - Phát video/audio có xác thực, thanh tiến trình, phát/tạm dừng, tua ±5 giây và toàn màn hình ngang.
 - Xem PDF, văn bản và mã nguồn dài có cuộn/phân trang: TXT, Markdown, JSON, YAML, XML, ENV, LOG, Python, Kotlin, JavaScript, TypeScript, notebook và nhiều định dạng khác.
@@ -58,7 +58,7 @@ app/build/outputs/apk/debug/app-debug.apk
 - Paginated directory browsing, pull-to-refresh, list/grid layouts, and selectable folder icon sets.
 - Create folders; upload files or directory trees; download, move, and delete multiple resources while respecting server permissions.
 - Separate upload/download queues with progress, retry, open-downloaded-item, and per-tab clear-all actions.
-- Cached image and video thumbnails to reduce server load.
+- Image and video thumbnails with a 32 MB bounded cache, seven-day expiry, and a manual clear action in Settings.
 - Image viewer with navigation between images in the current directory.
 - Authenticated video/audio playback with timeline, play/pause, ±5-second seeking, and landscape fullscreen.
 - Scrollable, paged previews for PDFs, large text files, and source code including TXT, Markdown, JSON, YAML, XML, ENV, LOG, Python, Kotlin, JavaScript, TypeScript, notebooks, and more.

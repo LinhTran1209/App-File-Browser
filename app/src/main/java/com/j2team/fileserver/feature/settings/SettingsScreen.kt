@@ -9,9 +9,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -20,8 +22,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.j2team.fileserver.BuildConfig
 import com.j2team.fileserver.R
+import com.j2team.fileserver.core.cache.AppCacheManager
 import com.j2team.fileserver.core.ui.AppIcons
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun SettingsScreen(
@@ -37,6 +42,11 @@ internal fun SettingsScreen(
     persistTreeGrant: ((TreeSelection) -> Boolean)? = null,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var thumbnailCacheBytes by remember { mutableStateOf(0L) }
+    LaunchedEffect(Unit) {
+        thumbnailCacheBytes = AppCacheManager.thumbnailCacheSize(context)
+    }
     var directoryError by remember { mutableStateOf<String?>(null) }
     val directoryPermissionError = stringResource(R.string.download_directory_permission_error)
     val onDirectorySelection: (TreeSelection?) -> Unit = { selection ->
@@ -62,7 +72,7 @@ internal fun SettingsScreen(
             Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(painterResource(AppIcons.Settings), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(12.dp))
-                Column { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium); Text(stringResource(R.string.app_version, "1.0"), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Column { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium); Text(stringResource(R.string.app_version, BuildConfig.VERSION_NAME), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
         SettingsLabel(R.string.language)
@@ -88,6 +98,24 @@ internal fun SettingsScreen(
             FilterChip(settings.gridView, { onChanged(settings.copy(gridView = true)) }, { Text(stringResource(R.string.grid)) }, leadingIcon = { Icon(painterResource(AppIcons.Grid), null) })
         }
         Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { Text(stringResource(R.string.show_hidden), modifier = Modifier.weight(1f)); Switch(settings.showHiddenFiles, { onChanged(settings.copy(showHiddenFiles = it)) }) }
+        SettingsLabel(R.string.preview_cache)
+        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(formatCacheSize(thumbnailCacheBytes), style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.cache_limit), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = {
+                    scope.launch {
+                        AppCacheManager.clearThumbnails(context)
+                        thumbnailCacheBytes = AppCacheManager.thumbnailCacheSize(context)
+                    }
+                }) { Text(stringResource(R.string.clear_cache)) }
+            }
+        }
         Button(onClick = onTransfers, modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp), shape = MaterialTheme.shapes.large) { Icon(painterResource(AppIcons.Transfers), null); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.open_transfers)) }
         }
     }
@@ -100,6 +128,12 @@ internal fun SettingsScreen(
 @Composable private fun SettingsLabel(resource: Int) = Text(stringResource(resource), fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 private fun folderIcon(set: FolderIconSet): Int = when (set) { FolderIconSet.Classic -> AppIcons.FolderClassic; FolderIconSet.Color -> AppIcons.FolderColor; FolderIconSet.Outline -> AppIcons.FolderOutline }
 private fun folderIconLabel(set: FolderIconSet): Int = when (set) { FolderIconSet.Classic -> R.string.folder_icon_classic; FolderIconSet.Color -> R.string.folder_icon_color; FolderIconSet.Outline -> R.string.folder_icon_outline }
+
+private fun formatCacheSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+    bytes >= 1024L -> String.format("%.1f KB", bytes / 1024.0)
+    else -> "$bytes B"
+}
 
 internal data class TreeSelection(val uri: android.net.Uri, val grantFlags: Int)
 

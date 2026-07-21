@@ -93,7 +93,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.UUID
+import com.j2team.fileserver.core.cache.AppCacheManager
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -568,7 +568,7 @@ private fun ResourceVisual(
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     val cacheFile = remember(profile.id, item.path) {
-        File(context.cacheDir, "thumbnails/${profile.id}-${UUID.nameUUIDFromBytes(item.path.toByteArray())}.img")
+        AppCacheManager.thumbnailFile(context, profile.id, item.path)
     }
     var bitmap by remember(cacheFile) { mutableStateOf<android.graphics.Bitmap?>(null) }
     LaunchedEffect(cacheFile) {
@@ -576,6 +576,9 @@ private fun ResourceVisual(
             if (!cacheFile.isFile || cacheFile.length() == 0L) {
                 cacheFile.parentFile?.mkdirs()
                 sessionRepository.thumbnail(profile, item.path, cacheFile).getOrNull()
+                AppCacheManager.recordWrite(context, cacheFile)
+            } else {
+                AppCacheManager.recordAccess(cacheFile)
             }
             BitmapFactory.decodeFile(cacheFile.path)
         }

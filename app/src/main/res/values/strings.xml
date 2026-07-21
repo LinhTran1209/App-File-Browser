@@ -76,4 +76,7 @@
     <string name="media_pause">T&#7841;m d&#7915;ng</string>
     <string name="media_loading">&#272;ang t&#7843;i media</string>
     <string name="media_seek">V&#7883; tr&#237; ph&#225;t</string>
+    <string name="preview_cache">B&#7897; nh&#7899; &#273;&#7879;m xem tr&#432;&#7899;c</string>
+    <string name="clear_cache">X&#243;a b&#7897; nh&#7899; &#273;&#7879;m</string>
+    <string name="cache_limit">T&#7921; &#273;&#7897;ng gi&#7899;i h&#7841;n &#7903; 32 MB</string>
 </resources>

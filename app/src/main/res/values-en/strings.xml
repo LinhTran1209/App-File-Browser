@@ -76,4 +76,7 @@
     <string name="media_pause">Pause</string>
     <string name="media_loading">Loading media</string>
     <string name="media_seek">Playback position</string>
+    <string name="preview_cache">Preview cache</string>
+    <string name="clear_cache">Clear cache</string>
+    <string name="cache_limit">Automatically limited to 32 MB</string>
 </resources>
