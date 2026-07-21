@@ -37,7 +37,7 @@ private const val TEXT_PAGE_BYTES = 128 * 1024
 private const val MAX_RETAINED_TEXT_PAGES = 8
 
 data class TextPage(val text: String)
-private data class RenderedTextPage(val id: Long, val page: TextPage)
+internal data class RenderedTextPage(val id: Long, val page: TextPage)
 
 /** Reads UTF-8 source incrementally, retaining at most one page plus a three-byte pushback buffer. */
 class TextPager(input: InputStream, private val pageBytes: Int = TEXT_PAGE_BYTES) : Closeable {
@@ -124,7 +124,7 @@ internal fun TextPreview(
         }.onFailure { onError(it.message ?: "Unable to load text preview") }
     }
 
-    TextPreviewPageList(pages.map(RenderedTextPage::page), modifier) {
+    TextPreviewPageList(pages, modifier) {
         if (!exhausted) {
             LaunchedEffect(pager, nextPageId) {
                 pager.loadNext()?.let { page ->
@@ -139,7 +139,7 @@ internal fun TextPreview(
 /** Scrollable page renderer shared by streamed previews and deterministic UI tests. */
 @Composable
 internal fun TextPreviewPageList(
-    pages: List<TextPage>,
+    pages: List<RenderedTextPage>,
     modifier: Modifier = Modifier,
     loadMore: @Composable () -> Unit = {},
 ) {
@@ -148,13 +148,14 @@ internal fun TextPreviewPageList(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(pages) { page ->
+        items(pages, key = RenderedTextPage::id) { rendered ->
             SelectionContainer {
                 Text(
-                    text = page.text,
+                    text = rendered.page.text,
                     color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
                     fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.testTag("text-page-${rendered.id}"),
                 )
             }
         }

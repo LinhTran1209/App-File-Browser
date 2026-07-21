@@ -6,7 +6,6 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -25,11 +24,11 @@ class EncryptedSecretStore(context: Context) : SecretStore {
     override fun put(profileId: String, credential: StoredCredential) {
         val plaintext = "${credential.username}\u0000${credential.password.concatToString()}".toByteArray(StandardCharsets.UTF_8)
         try {
-            val iv = ByteArray(IV_BYTES).also(SecureRandom()::nextBytes)
             val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-                init(Cipher.ENCRYPT_MODE, secretKey(), GCMParameterSpec(TAG_BITS, iv))
+                init(Cipher.ENCRYPT_MODE, secretKey())
                 updateAAD(profileId.toByteArray(StandardCharsets.UTF_8))
             }
+            val iv = cipher.iv
             val ciphertext = cipher.doFinal(plaintext)
             preferences.edit()
                 .putString(profileId, "${Base64.encodeToString(iv, Base64.NO_WRAP)}:${Base64.encodeToString(ciphertext, Base64.NO_WRAP)}")
@@ -84,7 +83,6 @@ class EncryptedSecretStore(context: Context) : SecretStore {
         const val PREFERENCES_NAME = "encrypted_server_credentials"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        const val IV_BYTES = 12
         const val TAG_BITS = 128
     }
 }

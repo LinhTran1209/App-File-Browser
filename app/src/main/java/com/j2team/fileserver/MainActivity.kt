@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -111,9 +112,11 @@ private fun FileServerApp(
         AppTheme.Dark -> true
     }
     FileServerTheme(darkTheme = dark) {
-        var screen by remember { mutableStateOf(Screen.Servers) }
+        var screenName by rememberSaveable { mutableStateOf(Screen.Servers.name) }
+        val screen = Screen.valueOf(screenName)
         var profiles by remember { mutableStateOf(serverStore.all()) }
-        var selected by remember { mutableStateOf<ServerProfile?>(null) }
+        var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+        val selected = profiles.firstOrNull { it.id == selectedId }
         var connectionError by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         val context = LocalContext.current
@@ -125,19 +128,19 @@ private fun FileServerApp(
             when (screen) {
                 Screen.Servers -> ServersScreen(
                     profiles = profiles,
-                    onAdd = { screen = Screen.AddServer },
+                    onAdd = { screenName = Screen.AddServer.name },
                     error = connectionError,
                     onOpen = { profile ->
                         connectionError = null
                         scope.launch {
                             val result = withContext(Dispatchers.IO) { sessionRepository.open(profile) }
                             result.onSuccess {
-                                selected = it.profile
-                                screen = Screen.Browser
+                                selectedId = it.profile.id
+                                screenName = Screen.Browser.name
                             }.onFailure {
                                 if (it is LoginRequiredException) {
-                                    selected = profile
-                                    screen = Screen.Login
+                                    selectedId = profile.id
+                                    screenName = Screen.Login.name
                                 } else {
                                     connectionError = it.message
                                 }
@@ -149,23 +152,23 @@ private fun FileServerApp(
                         serverStore.delete(it.id)
                         profiles = serverStore.all()
                     },
-                    onSettings = { screen = Screen.Settings },
+                    onSettings = { screenName = Screen.Settings.name },
                 )
                 Screen.AddServer -> AddServerScreen(
-                    onBack = { screen = Screen.Servers },
+                    onBack = { screenName = Screen.Servers.name },
                     onSave = { raw, name ->
                         Endpoint.normalize(raw).onSuccess {
                             serverStore.create(name.ifBlank { "${it.host}:${it.port}" }, it.scheme, it.host, it.port, it.basePath)
                             profiles = serverStore.all()
-                            screen = Screen.Servers
+                            screenName = Screen.Servers.name
                         }
                     },
                 )
                 Screen.Login -> LoginScreen(
                     profile = selected,
                     sessionRepository = sessionRepository,
-                    onBack = { screen = Screen.Servers },
-                    onConnected = { screen = Screen.Browser },
+                    onBack = { screenName = Screen.Servers.name },
+                    onConnected = { screenName = Screen.Browser.name },
                 )
                 Screen.Browser -> BrowserScreen(
                     profile = selected,
@@ -173,14 +176,14 @@ private fun FileServerApp(
                     transferStore = transferStore,
                     transferCoordinator = transferCoordinator,
                     sessionRepository = sessionRepository,
-                    onBack = { screen = Screen.Servers },
-                    onTransfers = { screen = Screen.Transfers },
+                    onBack = { screenName = Screen.Servers.name },
+                    onTransfers = { screenName = Screen.Transfers.name },
                 )
-                Screen.Transfers -> TransfersScreen(transferStore, transferCoordinator) { screen = Screen.Browser }
+                Screen.Transfers -> TransfersScreen(transferStore, transferCoordinator) { screenName = Screen.Browser.name }
                 Screen.Settings -> SettingsScreen(
                     settings = settings,
-                    onBack = { screen = Screen.Servers },
-                    onTransfers = { screen = Screen.Transfers },
+                    onBack = { screenName = Screen.Servers.name },
+                    onTransfers = { screenName = Screen.Transfers.name },
                     onChanged = { updated ->
                         val languageChanged = settings.language != updated.language
                         settings = updated

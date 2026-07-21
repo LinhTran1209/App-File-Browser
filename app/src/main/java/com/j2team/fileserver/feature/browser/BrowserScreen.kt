@@ -53,6 +53,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -340,7 +342,7 @@ fun BrowserScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun ResourceRow(
+private fun ResourceRow(
     item: RemoteResource,
     settings: AppSettings,
     selected: Boolean,
@@ -349,7 +351,10 @@ internal fun ResourceRow(
     onDownload: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().height(72.dp).combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        modifier = Modifier.fillMaxWidth().height(72.dp)
+            .semantics { this.selected = selected }
+            .testTag("resource-${item.path}")
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface),
     ) {

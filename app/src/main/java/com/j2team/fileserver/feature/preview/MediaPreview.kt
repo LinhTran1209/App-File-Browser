@@ -139,7 +139,7 @@ internal fun createMediaPlayer(
     initialPositionMs: Long,
 ): ExoPlayer {
     val configuration = mediaStreamConfiguration(token)
-    val dataSourceFactory = OkHttpDataSource.Factory(OkHttpClient())
+    val dataSourceFactory = OkHttpDataSource.Factory(mediaHttpClient())
         .setDefaultRequestProperties(configuration.headers)
     val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(
         MediaItem.Builder().setUri(rawUrl).setMimeType(mimeType).build(),
@@ -157,6 +157,11 @@ internal fun createMediaPlayer(
         playWhenReady = true
     }
 }
+
+internal fun mediaHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    .followRedirects(false)
+    .followSslRedirects(false)
+    .build()
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable

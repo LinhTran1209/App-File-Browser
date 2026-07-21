@@ -8,8 +8,8 @@ import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
 /** Small durable queue; the worker can update it as bytes are streamed. */
-class TransferStore(context: Context) {
-    private val prefs = context.getSharedPreferences("transfer_queue", Context.MODE_PRIVATE)
+class TransferStore(context: Context, preferencesName: String = "transfer_queue") {
+    private val prefs = context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE)
     private val _tasks = MutableStateFlow(recoverAndPersist())
     val tasks: StateFlow<List<TransferTask>> = _tasks
 

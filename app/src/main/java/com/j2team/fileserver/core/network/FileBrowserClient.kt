@@ -346,6 +346,7 @@ class FileBrowserClient {
         connectTimeout = 8_000
         readTimeout = 15_000
         useCaches = false
+        instanceFollowRedirects = false
     }
 
     private fun apiUrl(profile: ServerProfile, apiPath: String, path: String): String {

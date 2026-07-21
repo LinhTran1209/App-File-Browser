@@ -2,9 +2,18 @@ package com.j2team.fileserver.feature.preview
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class MediaTypeTest {
+    @Test
+    fun mediaClientDoesNotFollowRedirects() {
+        val client = mediaHttpClient()
+
+        assertFalse(client.followRedirects)
+        assertFalse(client.followSslRedirects)
+    }
+
     @Test
     fun mapsSupportedVideoExtensionsCaseInsensitively() {
         val cases = mapOf(

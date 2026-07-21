@@ -22,15 +22,28 @@ import com.j2team.fileserver.R
 import com.j2team.fileserver.core.ui.AppIcons
 
 @Composable
-fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onTransfers: () -> Unit, onChanged: (AppSettings) -> Unit) {
+internal fun SettingsScreen(
+    settings: AppSettings,
+    onBack: () -> Unit,
+    onTransfers: () -> Unit,
+    onChanged: (AppSettings) -> Unit,
+    directoryPicker: @Composable ((TreeSelection?) -> Unit) -> () -> Unit = { onSelection ->
+        val launcher = rememberLauncherForActivityResult(PersistableTreeContract(), onSelection)
+        val launch: () -> Unit = { launcher.launch(Unit) }
+        launch
+    },
+    persistTreeGrant: ((TreeSelection) -> Boolean)? = null,
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var directoryError by remember { mutableStateOf<String?>(null) }
     val directoryPermissionError = stringResource(R.string.download_directory_permission_error)
-    val directoryPicker = rememberLauncherForActivityResult(PersistableTreeContract()) { selection ->
+    val onDirectorySelection: (TreeSelection?) -> Unit = { selection ->
         if (selection != null) {
-            val persisted = acceptsDownloadTreeGrant(selection.grantFlags) && runCatching {
-                context.contentResolver.takePersistableUriPermission(selection.uri, selection.grantFlags)
-            }.isSuccess
+            val persisted = acceptsDownloadTreeGrant(selection.grantFlags) && (
+                persistTreeGrant?.invoke(selection) ?: runCatching {
+                    context.contentResolver.takePersistableUriPermission(selection.uri, selection.grantFlags)
+                }.isSuccess
+            )
             if (persisted) {
                 directoryError = null
                 onChanged(settings.copy(downloadTreeUri = selection.uri.toString()))
@@ -39,6 +52,7 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onTransfers: () ->
             }
         }
     }
+    val launchDirectoryPicker = directoryPicker(onDirectorySelection)
     Column(Modifier.fillMaxSize()) {
         SettingsAppBar(onBack)
         Card(Modifier.fillMaxWidth().padding(16.dp).height(96.dp), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
@@ -53,7 +67,7 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onTransfers: () ->
             AppLanguage.entries.forEach { language -> FilterChip(settings.language == language, { onChanged(settings.copy(language = language)) }, { Text(stringResource(if (language == AppLanguage.Vietnamese) R.string.language_vietnamese else R.string.language_english)) }) }
         }
         SettingsLabel(R.string.download_directory)
-        Button(onClick = { directoryPicker.launch(Unit) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), contentPadding = PaddingValues(horizontal = 16.dp)) {
+        Button(onClick = launchDirectoryPicker, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), contentPadding = PaddingValues(horizontal = 16.dp)) {
             Icon(painterResource(AppIcons.Download), null); Spacer(Modifier.width(8.dp)); Text(settings.downloadTreeUri ?: stringResource(R.string.choose_download_directory), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         directoryError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
@@ -83,7 +97,7 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit, onTransfers: () ->
 private fun folderIcon(set: FolderIconSet): Int = when (set) { FolderIconSet.Classic -> AppIcons.FolderClassic; FolderIconSet.Color -> AppIcons.FolderColor; FolderIconSet.Outline -> AppIcons.FolderOutline }
 private fun folderIconLabel(set: FolderIconSet): Int = when (set) { FolderIconSet.Classic -> R.string.folder_icon_classic; FolderIconSet.Color -> R.string.folder_icon_color; FolderIconSet.Outline -> R.string.folder_icon_outline }
 
-private data class TreeSelection(val uri: android.net.Uri, val grantFlags: Int)
+internal data class TreeSelection(val uri: android.net.Uri, val grantFlags: Int)
 
 private class PersistableTreeContract : ActivityResultContract<Unit, TreeSelection?>() {
     override fun createIntent(context: android.content.Context, input: Unit): Intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {

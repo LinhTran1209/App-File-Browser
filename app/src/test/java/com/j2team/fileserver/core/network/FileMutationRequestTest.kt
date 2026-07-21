@@ -15,8 +15,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import com.sun.net.httpserver.HttpServer
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicInteger
 
 class FileMutationRequestTest {
+    @Test
+    fun authenticatedRequestsDoNotFollowRedirects() = runTest {
+        val redirectedRequests = AtomicInteger()
+        val target = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                redirectedRequests.incrementAndGet()
+                exchange.sendResponseHeaders(200, 0)
+                exchange.close()
+            }
+            start()
+        }
+        val redirector = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                exchange.responseHeaders.add("Location", "http://127.0.0.1:${target.address.port}/stolen")
+                exchange.sendResponseHeaders(302, -1)
+                exchange.close()
+            }
+            start()
+        }
+        try {
+            val result = FileBrowserClient().list(profile(redirector), "secret-token", "/")
+
+            assertFalse(result.isSuccess)
+            assertEquals(0, redirectedRequests.get())
+        } finally {
+            redirector.stop(0)
+            target.stop(0)
+        }
+    }
+
     @Test
     fun cancellationBeforePublicationClosesTheLateRequestOwner() {
         var closed = 0
