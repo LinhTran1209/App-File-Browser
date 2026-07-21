@@ -340,7 +340,7 @@ fun BrowserScreen(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ResourceRow(
+internal fun ResourceRow(
     item: RemoteResource,
     settings: AppSettings,
     selected: Boolean,

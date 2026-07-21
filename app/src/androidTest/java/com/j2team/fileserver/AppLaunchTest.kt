@@ -18,4 +18,3 @@ class AppLaunchTest {
         compose.onNodeWithText("File Server").assertIsDisplayed()
     }
 }
-

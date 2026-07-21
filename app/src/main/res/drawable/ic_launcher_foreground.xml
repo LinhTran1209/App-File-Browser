@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- The mark stays inside Android's adaptive-icon safe zone (21dp inset). -->
+    <path
+        android:fillColor="#E8EAF6"
+        android:pathData="M28,36c0,-2.2 1.8,-4 4,-4h16l6,6h22c2.2,0 4,1.8 4,4v28c0,2.2 -1.8,4 -4,4H32c-2.2,0 -4,-1.8 -4,-4z" />
+    <path
+        android:fillColor="#C5CAE9"
+        android:pathData="M28,44h52v8H28z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M56,47c0,-2.2 1.8,-4 4,-4h14c2.2,0 4,1.8 4,4v27c0,2.2 -1.8,4 -4,4H60c-2.2,0 -4,-1.8 -4,-4z" />
+    <path
+        android:fillColor="#5C6BC0"
+        android:pathData="M61,51h12v4H61zM61,59h12v4H61zM64,68a3,3 0,1 0,0.01 0z" />
+</vector>

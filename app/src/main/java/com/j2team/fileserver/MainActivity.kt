@@ -314,7 +314,7 @@ private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit
 }
 
 @Composable
-private fun LoginScreen(
+internal fun LoginScreen(
     profile: ServerProfile?,
     sessionRepository: SessionRepository,
     onBack: () -> Unit,

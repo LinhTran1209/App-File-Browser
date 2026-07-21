@@ -18,6 +18,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.j2team.fileserver.core.model.RemoteResource
@@ -123,30 +124,40 @@ internal fun TextPreview(
         }.onFailure { onError(it.message ?: "Unable to load text preview") }
     }
 
+    TextPreviewPageList(pages.map(RenderedTextPage::page), modifier) {
+        if (!exhausted) {
+            LaunchedEffect(pager, nextPageId) {
+                pager.loadNext()?.let { page ->
+                    if (pages.size == MAX_RETAINED_TEXT_PAGES) pages.removeAt(0)
+                    pages.add(RenderedTextPage(nextPageId++, page))
+                } ?: run { exhausted = true }
+            }
+        }
+    }
+}
+
+/** Scrollable page renderer shared by streamed previews and deterministic UI tests. */
+@Composable
+internal fun TextPreviewPageList(
+    pages: List<TextPage>,
+    modifier: Modifier = Modifier,
+    loadMore: @Composable () -> Unit = {},
+) {
     LazyColumn(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize().testTag("text-preview-pages"),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(pages, key = RenderedTextPage::id) { rendered ->
+        items(pages) { page ->
             SelectionContainer {
                 Text(
-                    text = rendered.page.text,
+                    text = page.text,
                     color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
                     fontFamily = FontFamily.Monospace,
                 )
             }
         }
-        if (!exhausted) {
-            item(key = "next-page") {
-                LaunchedEffect(pager, nextPageId) {
-                    pager.loadNext()?.let { page ->
-                        if (pages.size == MAX_RETAINED_TEXT_PAGES) pages.removeAt(0)
-                        pages.add(RenderedTextPage(nextPageId++, page))
-                    } ?: run { exhausted = true }
-                }
-            }
-        }
+        item(key = "next-page") { loadMore() }
     }
 }
