@@ -24,6 +24,19 @@ class MediaPreviewPolicyTest {
     }
 
     @Test
+    fun identicalRenewedTokenStillAdvancesReprepareGenerationOnlyOnce() {
+        var state = StreamRetryState()
+        assertEquals(StreamFailureAction.RefreshAndReprepare, streamFailureAction(true, state.retryUsed, state.refreshInFlight))
+
+        state = state.beginRefresh().renewedSuccessfully()
+        assertTrue(state.retryUsed)
+        assertFalse(state.refreshInFlight)
+        assertEquals(1, state.reprepareGeneration)
+
+        assertEquals(StreamFailureAction.ShowLocalError, streamFailureAction(true, state.retryUsed, state.refreshInFlight))
+    }
+
+    @Test
     fun cleanupIncludesBothFinalAndPartialFallbackFiles() {
         val destination = File("cache/media/episode.mp4")
 

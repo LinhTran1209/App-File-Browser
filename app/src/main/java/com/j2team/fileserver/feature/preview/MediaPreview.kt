@@ -65,6 +65,21 @@ internal data class MediaStreamConfiguration(
 
 internal enum class StreamFailureAction { RefreshAndReprepare, ShowLocalError, IgnoreWhileRefreshing }
 
+internal data class StreamRetryState(
+    val retryUsed: Boolean = false,
+    val refreshInFlight: Boolean = false,
+    val reprepareGeneration: Int = 0,
+) {
+    fun beginRefresh(): StreamRetryState = copy(retryUsed = true, refreshInFlight = true)
+
+    fun renewedSuccessfully(): StreamRetryState = copy(
+        refreshInFlight = false,
+        reprepareGeneration = reprepareGeneration + 1,
+    )
+
+    fun renewalFailed(): StreamRetryState = copy(refreshInFlight = false)
+}
+
 internal fun mediaStreamConfiguration(token: String): MediaStreamConfiguration =
     MediaStreamConfiguration(headers = mapOf("X-Auth" to token))
 
@@ -158,8 +173,7 @@ internal fun MediaPreview(
     val mimeType = remember(item.name, declaredMimeType) { mediaMimeType(item.name, declaredMimeType) }
     var token by remember(profile.id, item.path) { mutableStateOf<String?>(null) }
     var localError by remember(item.path) { mutableStateOf<String?>(null) }
-    var retryUsed by remember(item.path) { mutableStateOf(false) }
-    var refreshInFlight by remember(item.path) { mutableStateOf(false) }
+    var retryState by remember(item.path) { mutableStateOf(StreamRetryState()) }
     var isOpeningExternally by remember(item.path) { mutableStateOf(false) }
     var fallbackJob by remember(item.path) { mutableStateOf<Job?>(null) }
     var savedPositionMs by rememberSaveable(item.path) { mutableLongStateOf(0L) }
@@ -196,17 +210,22 @@ internal fun MediaPreview(
                 token = token!!,
                 mimeType = mimeType,
                 initialPositionMs = savedPositionMs,
+                reprepareGeneration = retryState.reprepareGeneration,
                 onPositionChanged = { savedPositionMs = it },
                 onFailure = { authenticationFailure ->
-                    when (streamFailureAction(authenticationFailure, retryUsed, refreshInFlight)) {
+                    when (streamFailureAction(authenticationFailure, retryState.retryUsed, retryState.refreshInFlight)) {
                         StreamFailureAction.RefreshAndReprepare -> {
-                            retryUsed = true
-                            refreshInFlight = true
+                            retryState = retryState.beginRefresh()
                             scope.launch {
                                 sessionRepository.renewStreamingToken(profile)
-                                    .onSuccess { token = it }
-                                    .onFailure { localError = authError }
-                                refreshInFlight = false
+                                    .onSuccess {
+                                        token = it
+                                        retryState = retryState.renewedSuccessfully()
+                                    }
+                                    .onFailure {
+                                        localError = authError
+                                        retryState = retryState.renewalFailed()
+                                    }
                             }
                         }
                         StreamFailureAction.ShowLocalError -> localError = playbackError
@@ -280,12 +299,13 @@ private fun MediaPlayerContent(
     token: String,
     mimeType: String,
     initialPositionMs: Long,
+    reprepareGeneration: Int,
     onPositionChanged: (Long) -> Unit,
     onFailure: (Boolean) -> Unit,
 ) {
     val loadingDescription = stringResource(R.string.media_loading)
     val seekDescription = stringResource(R.string.media_seek)
-    val player = remember(token, rawUrl, mimeType) {
+    val player = remember(token, rawUrl, mimeType, reprepareGeneration) {
         createMediaPlayer(context, rawUrl, token, mimeType, initialPositionMs)
     }
     var isPlaying by remember(player) { mutableStateOf(player.isPlaying) }
