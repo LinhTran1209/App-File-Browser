@@ -11,4 +11,4 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
-
+.superpowers/sdd/review-*.diff
