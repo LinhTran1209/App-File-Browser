@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.6 seconds
-Output:
 package com.j2team.fileserver.core.network
 
 import java.net.URI
@@ -25,4 +22,3 @@ object Endpoint {
         NormalizedEndpoint(uri.scheme.lowercase(), uri.host, port, "/${uri.path.trim('/')}")
     }
 }
-

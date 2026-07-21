@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.5 seconds
-Output:
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">File Server</string>
@@ -12,7 +9,7 @@ Output:
     <string name="sign_in">Sign in</string>
     <string name="username">Username</string>
     <string name="password">Password</string>
-    <string name="connecting">Connectingâ€¦</string>
+    <string name="connecting">Connecting…</string>
     <string name="online">Online</string>
     <string name="offline">Offline</string>
     <string name="folder">Folder</string>
@@ -34,5 +31,49 @@ Output:
     <string name="http_warning">HTTP is unencrypted. Continue only on a trusted network.</string>
     <string name="connection_failed">Connection failed: %1$s</string>
     <string name="preview_unsupported">This format cannot be previewed.</string>
+    <string name="preview_open_anyway">Open anyway</string>
+    <string name="language">Language</string>
+    <string name="language_vietnamese">Vietnamese</string>
+    <string name="language_english">English</string>
+    <string name="download_directory">Download directory</string>
+    <string name="choose_download_directory">Choose download directory</string>
+    <string name="folder_icons">Folder icons</string>
+    <string name="folder_icon_classic">Classic</string>
+    <string name="folder_icon_color">Color</string>
+    <string name="folder_icon_outline">Outline</string>
+    <string name="view_mode">View mode</string>
+    <string name="grid">Grid</string>
+    <string name="show_password">Show password</string>
+    <string name="hide_password">Hide password</string>
+    <string name="app_version">Android native • v%1$s</string>
+    <string name="download_directory_permission_error">The selected folder cannot be used. Grant folder access again.</string>
+    <string name="download_directory_unavailable">The selected download folder is unavailable. Choose it again in Settings.</string>
+    <string name="new_folder">New folder</string>
+    <string name="upload_files">Upload files</string>
+    <string name="move">Move</string>
+    <string name="move_selected">Move selected items</string>
+    <string name="destination_folder">Destination folder</string>
+    <string name="move_here">Move here</string>
+    <string name="file">File</string>
+    <string name="open_item">Open</string>
+    <string name="upload_folder">Upload folder</string>
+    <string name="folder_name">Folder name</string>
+    <string name="create">Create</string>
+    <string name="cancel">Cancel</string>
+    <string name="selected_count">%1$d selected</string>
+    <string name="confirm_delete_title">Delete selected items?</string>
+    <string name="confirm_delete_message">Delete %1$d selected items? This cannot be undone.</string>
+    <string name="action_not_permitted">This action is not permitted by the server.</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="clear_all">Clear all</string>
+    <string name="browser_actions">File actions</string>
+    <string name="browser_actions_long_press">Long press to show file actions</string>
+    <string name="media_preview_error">Can\'t play this media file. You can try another app.</string>
+    <string name="media_preview_auth_error">Your session expired. Please sign in again.</string>
+    <string name="media_open_with">Open with another app</string>
+    <string name="media_external_error">Couldn\'t open the media file in another app.</string>
+    <string name="media_play">Play</string>
+    <string name="media_pause">Pause</string>
+    <string name="media_loading">Loading media</string>
+    <string name="media_seek">Playback position</string>
 </resources>
-

@@ -1,16 +1,16 @@
-Exit code: 0
-Wall time: 0.5 seconds
-Output:
 package com.j2team.fileserver
 
-import android.graphics.BitmapFactory
+import android.app.LocaleManager
 import android.content.Context
+import android.content.ContentResolver
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
-import android.widget.MediaController
-import android.widget.VideoView
+import android.os.Build
+import android.os.LocaleList
+import android.provider.DocumentsContract
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,16 +23,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -40,38 +42,66 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.network.Endpoint
 import com.j2team.fileserver.core.network.FileBrowserClient
+import com.j2team.fileserver.core.session.EncryptedSecretStore
+import com.j2team.fileserver.core.session.LoginRequiredException
+import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.FileServerTheme
+import com.j2team.fileserver.core.ui.AppIcons
 import com.j2team.fileserver.feature.browser.BrowserPath
-import com.j2team.fileserver.feature.preview.PreviewKind
-import com.j2team.fileserver.feature.preview.PreviewRouter
+import com.j2team.fileserver.feature.browser.BrowserScreen
+import com.j2team.fileserver.feature.preview.PreviewScreen
 import com.j2team.fileserver.feature.servers.ServerStore
 import com.j2team.fileserver.feature.settings.AppSettings
 import com.j2team.fileserver.feature.settings.AppTheme
+import com.j2team.fileserver.feature.settings.AppLanguage
+import com.j2team.fileserver.feature.settings.FolderIconSet
+import com.j2team.fileserver.feature.settings.SettingsScreen
 import com.j2team.fileserver.feature.settings.SettingsStore
 import com.j2team.fileserver.feature.transfers.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun attachBaseContext(newBase: Context) {
-        val config = Configuration(newBase.resources.configuration).apply {
-            setLocale(Locale.forLanguageTag("vi"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            super.attachBaseContext(newBase)
+            return
         }
+        val language = SettingsStore(newBase).read().language
+        val config = Configuration(newBase.resources.configuration).apply { setLocale(Locale.forLanguageTag(language.languageTag)) }
         super.attachBaseContext(newBase.createConfigurationContext(config))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) applyLanguage(SettingsStore(this).read().language)
         setContent {
             FileServerApp(
                 serverStore = ServerStore(this),
                 settingsStore = SettingsStore(this),
-                transferStore = TransferStore(this),
+                transferStore = (application as FileServerApp).transferStore,
+                sessionRepository = (application as FileServerApp).sessionRepository,
+                onLanguageChanged = ::applyLanguage,
             )
         }
+    }
+
+    override fun onDestroy() {
+        if (isFinishing && !isChangingConfigurations) {
+            (application as FileServerApp).sessionRepository.clearProcessSession()
+        }
+        super.onDestroy()
+    }
+
+    private fun applyLanguage(language: AppLanguage) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getSystemService(LocaleManager::class.java).applicationLocales = LocaleList.forLanguageTags(language.languageTag)
+        } else recreate()
     }
 }
 
@@ -82,6 +112,8 @@ private fun FileServerApp(
     serverStore: ServerStore,
     settingsStore: SettingsStore,
     transferStore: TransferStore,
+    sessionRepository: SessionRepository,
+    onLanguageChanged: (AppLanguage) -> Unit,
 ) {
     var settings by remember { mutableStateOf(settingsStore.read()) }
     val dark = when (settings.theme) {
@@ -90,51 +122,87 @@ private fun FileServerApp(
         AppTheme.Dark -> true
     }
     FileServerTheme(darkTheme = dark) {
-        var screen by remember { mutableStateOf(Screen.Servers) }
+        var screenName by rememberSaveable { mutableStateOf(Screen.Servers.name) }
+        val screen = Screen.valueOf(screenName)
         var profiles by remember { mutableStateOf(serverStore.all()) }
-        var selected by remember { mutableStateOf<ServerProfile?>(null) }
-        var token by remember { mutableStateOf<String?>(null) }
+        var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+        val selected = profiles.firstOrNull { it.id == selectedId }
+        var connectionError by remember { mutableStateOf<String?>(null) }
+        val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+        val transferCoordinator = remember(selected?.id) {
+            selected?.let { TransferCoordinator(context.applicationContext, transferStore, sessionRepository, it) }
+        }
 
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Surface(
+            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+            color = MaterialTheme.colorScheme.background,
+        ) {
             when (screen) {
                 Screen.Servers -> ServersScreen(
                     profiles = profiles,
-                    onAdd = { screen = Screen.AddServer },
-                    onOpen = { selected = it; screen = Screen.Login },
-                    onDelete = { serverStore.delete(it.id); profiles = serverStore.all() },
-                    onSettings = { screen = Screen.Settings },
+                    sessionRepository = sessionRepository,
+                    onAdd = { screenName = Screen.AddServer.name },
+                    error = connectionError,
+                    onOpen = { profile ->
+                        connectionError = null
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) { sessionRepository.open(profile) }
+                            result.onSuccess {
+                                selectedId = it.profile.id
+                                screenName = Screen.Browser.name
+                            }.onFailure {
+                                if (it is LoginRequiredException) {
+                                    selectedId = profile.id
+                                    screenName = Screen.Login.name
+                                } else {
+                                    connectionError = it.message
+                                }
+                            }
+                        }
+                    },
+                    onDelete = {
+                        sessionRepository.clear(it.id)
+                        serverStore.delete(it.id)
+                        profiles = serverStore.all()
+                    },
+                    onSettings = { screenName = Screen.Settings.name },
                 )
                 Screen.AddServer -> AddServerScreen(
-                    onBack = { screen = Screen.Servers },
+                    onBack = { screenName = Screen.Servers.name },
                     onSave = { raw, name ->
                         Endpoint.normalize(raw).onSuccess {
                             serverStore.create(name.ifBlank { "${it.host}:${it.port}" }, it.scheme, it.host, it.port, it.basePath)
                             profiles = serverStore.all()
-                            screen = Screen.Servers
+                            screenName = Screen.Servers.name
                         }
                     },
                 )
                 Screen.Login -> LoginScreen(
                     profile = selected,
-                    onBack = { screen = Screen.Servers },
-                    onConnected = { token = it; screen = Screen.Browser },
+                    sessionRepository = sessionRepository,
+                    onBack = { screenName = Screen.Servers.name },
+                    onConnected = { screenName = Screen.Browser.name },
                 )
                 Screen.Browser -> BrowserScreen(
                     profile = selected,
-                    token = token,
                     settings = settings,
                     transferStore = transferStore,
-                    onBack = { screen = Screen.Servers },
-                    onTransfers = { screen = Screen.Transfers },
+                    transferCoordinator = transferCoordinator,
+                    sessionRepository = sessionRepository,
+                    onBack = { screenName = Screen.Servers.name },
+                    onTransfers = { screenName = Screen.Transfers.name },
                 )
-                Screen.Transfers -> TransfersScreen(transferStore) { screen = Screen.Browser }
+                Screen.Transfers -> TransfersScreen(transferStore, transferCoordinator) { screenName = Screen.Browser.name }
                 Screen.Settings -> SettingsScreen(
                     settings = settings,
-                    onBack = { screen = Screen.Servers },
-                    onTransfers = { screen = Screen.Transfers },
-                    onChanged = {
-                        settings = it
-                        settingsStore.save(it)
+                    onBack = { screenName = Screen.Servers.name },
+                    onTransfers = { screenName = Screen.Transfers.name },
+                    onChanged = { updated ->
+                        val languageChanged = settings.language != updated.language
+                        settings = updated
+                        settingsStore.save(updated)
+                        if (languageChanged) onLanguageChanged(updated.language)
                     },
                 )
             }
@@ -143,7 +211,12 @@ private fun FileServerApp(
 }
 
 @Composable
-private fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Composable () -> Unit)? = null) {
+internal fun AppBar(
+    title: String,
+    onBack: (() -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
+    action: (@Composable () -> Unit)? = null,
+) {
     Surface(color = MaterialTheme.colorScheme.surface) {
         Row(
             Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
@@ -151,9 +224,10 @@ private fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Compos
         ) {
             if (onBack != null) {
                 TextButton(onClick = onBack, modifier = Modifier.size(48.dp), contentPadding = PaddingValues(0.dp)) {
-                    Text("â€¹", style = MaterialTheme.typography.headlineMedium)
+                    Text("‹", style = MaterialTheme.typography.headlineMedium)
                 }
             }
+            leading?.invoke()
             Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             action?.invoke()
         }
@@ -163,15 +237,20 @@ private fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Compos
 @Composable
 private fun ServersScreen(
     profiles: List<ServerProfile>,
+    sessionRepository: SessionRepository,
+    error: String?,
     onAdd: () -> Unit,
     onOpen: (ServerProfile) -> Unit,
     onDelete: (ServerProfile) -> Unit,
     onSettings: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
-        AppBar(stringResource(R.string.app_name), action = {
+        AppBar(stringResource(R.string.app_name), leading = {
+            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(40.dp))
+            Spacer(Modifier.width(10.dp))
+        }, action = {
             IconButton(onClick = onSettings, modifier = Modifier.size(48.dp)) {
-                Icon(painterResource(R.drawable.settings_icon), contentDescription = stringResource(R.string.settings), tint = Color.Unspecified)
+                Icon(painterResource(AppIcons.Settings), contentDescription = stringResource(R.string.settings))
             }
         })
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
@@ -181,24 +260,35 @@ private fun ServersScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 16.dp),
             )
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (profiles.isEmpty()) item { Text(stringResource(R.string.server_empty), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(profiles, key = { it.id }) { profile ->
-                    ServerCard(profile, { onOpen(profile) }, { onDelete(profile) })
+                    ServerCard(profile, sessionRepository, { onOpen(profile) }, { onDelete(profile) })
                 }
             }
             Button(
                 onClick = onAdd,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp).height(56.dp),
                 shape = RoundedCornerShape(18.dp),
-            ) { Text("+  ${stringResource(R.string.add_server)}") }
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("+", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.add_server), style = MaterialTheme.typography.titleMedium)
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun ServerCard(profile: ServerProfile, sessionRepository: SessionRepository, onClick: () -> Unit, onDelete: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
+    var online by remember(profile.endpoint) { mutableStateOf(false) }
+    LaunchedEffect(profile.endpoint) {
+        online = withContext(Dispatchers.IO) { sessionRepository.isReachable(profile) }
+    }
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().height(112.dp),
@@ -213,13 +303,18 @@ private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: ()
                 Text(profile.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(profile.endpoint.removeSuffix("/"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             }
-            Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondary) {
-                Text(stringResource(R.string.online), color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+            Surface(shape = RoundedCornerShape(50), color = if (online) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error) {
+                Text(stringResource(if (online) R.string.online else R.string.offline), color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
             }
             Box {
-                TextButton(onClick = { menu = true }, contentPadding = PaddingValues(8.dp)) { Text("â‹®") }
+                TextButton(onClick = { menu = true }, modifier = Modifier.size(52.dp), contentPadding = PaddingValues(0.dp)) {
+                    Text("⋮", style = MaterialTheme.typography.headlineMedium)
+                }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; onDelete() })
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.delete), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
+                        onClick = { menu = false; onDelete() },
+                    )
                 }
             }
         }
@@ -237,7 +332,7 @@ private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit
             OutlinedTextField(
                 endpoint, { endpoint = it; error = null },
                 label = { Text(stringResource(R.string.server_address)) },
-                placeholder = { Text("http://192.168.10.37:8888") },
+                placeholder = { Text("http://192.168.1.10:8080") },
                 modifier = Modifier.fillMaxWidth().height(64.dp), singleLine = true, shape = RoundedCornerShape(12.dp),
             )
             OutlinedTextField(
@@ -250,7 +345,7 @@ private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit
                 onClick = {
                     Endpoint.normalize(endpoint).fold(
                         onSuccess = { onSave(endpoint, name) },
-                        onFailure = { error = it.message ?: "URL khÃ´ng há»£p lá»‡" },
+                        onFailure = { error = it.message ?: "URL không hợp lệ" },
                     )
                 },
                 modifier = Modifier.fillMaxWidth().height(56.dp),
@@ -261,9 +356,15 @@ private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit
 }
 
 @Composable
-private fun LoginScreen(profile: ServerProfile?, onBack: () -> Unit, onConnected: (String?) -> Unit) {
+internal fun LoginScreen(
+    profile: ServerProfile?,
+    sessionRepository: SessionRepository,
+    onBack: () -> Unit,
+    onConnected: () -> Unit,
+) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -276,7 +377,11 @@ private fun LoginScreen(profile: ServerProfile?, onBack: () -> Unit, onConnected
             Text(profile?.endpoint.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(username, { username = it }, label = { Text(stringResource(R.string.username)) }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp))
-            OutlinedTextField(password, { password = it }, label = { Text(stringResource(R.string.password)) }, modifier = Modifier.fillMaxWidth(), singleLine = true, visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp))
+            OutlinedTextField(
+                password, { password = it }, label = { Text(stringResource(R.string.password)) }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp),
+                trailingIcon = { IconButton(onClick = { passwordVisible = !passwordVisible }) { Icon(painterResource(if (passwordVisible) AppIcons.VisibilityOff else AppIcons.Visibility), contentDescription = stringResource(if (passwordVisible) R.string.hide_password else R.string.show_password)) } },
+            )
             if (profile?.scheme == "http") Text(stringResource(R.string.http_warning), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button(
@@ -284,9 +389,11 @@ private fun LoginScreen(profile: ServerProfile?, onBack: () -> Unit, onConnected
                     val current = profile ?: return@Button
                     busy = true
                     scope.launch {
-                        val result = withContext(Dispatchers.IO) { FileBrowserClient().login(current, username, password) }
+                        val result = withContext(Dispatchers.IO) {
+                            sessionRepository.login(current, username, password.toCharArray())
+                        }
                         busy = false
-                        result.onSuccess(onConnected).onFailure { error = it.message }
+                        result.onSuccess { onConnected() }.onFailure { error = it.message }
                     }
                 },
                 enabled = !busy && username.isNotBlank() && password.isNotBlank(),
@@ -298,20 +405,21 @@ private fun LoginScreen(profile: ServerProfile?, onBack: () -> Unit, onConnected
 }
 
 @Composable
-private fun BrowserScreen(
+private fun LegacyBrowserScreen(
     profile: ServerProfile?,
-    token: String?,
     settings: AppSettings,
     transferStore: TransferStore,
+    sessionRepository: SessionRepository,
     onBack: () -> Unit,
     onTransfers: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val client = remember { FileBrowserClient() }
     var path by remember { mutableStateOf(profile?.basePath ?: "/") }
     var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var downloadError by remember { mutableStateOf<String?>(null) }
+    val downloadDirectoryUnavailable = stringResource(R.string.download_directory_unavailable)
     var loading by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<RemoteResource?>(null) }
 
@@ -319,7 +427,7 @@ private fun BrowserScreen(
         val current = profile ?: return
         loading = true
         scope.launch {
-            val result = withContext(Dispatchers.IO) { client.list(current, token, path) }
+            val result = withContext(Dispatchers.IO) { sessionRepository.list(current, path) }
             loading = false
             result.onSuccess { list ->
                 resources = list.filter { settings.showHiddenFiles || !it.name.startsWith(".") }
@@ -328,7 +436,7 @@ private fun BrowserScreen(
             }.onFailure { error = it.message }
         }
     }
-    LaunchedEffect(profile, token, path, settings.showHiddenFiles) { refresh() }
+    LaunchedEffect(profile, path, settings.showHiddenFiles) { refresh() }
 
     val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null && profile != null) {
@@ -342,7 +450,7 @@ private fun BrowserScreen(
                 var task = transferStore.enqueue(name, path, TransferDirection.Upload, temp.length())
                 task = transferStore.save(task.copy(state = TransferState.Running))
                 withContext(Dispatchers.IO) {
-                    client.upload(profile, token, path, temp) { sent, total -> transferStore.update(task.id, sent, TransferState.Running) }
+                    sessionRepository.uploadOnce(profile, path, temp) { sent, _ -> transferStore.update(task.id, sent, TransferState.Running) }
                 }.onSuccess { transferStore.update(task.id, task.totalBytes, TransferState.Completed); refresh() }
                     .onFailure { transferStore.update(task.id, task.transferredBytes, TransferState.Failed, it.message) }
                 temp.delete()
@@ -351,18 +459,18 @@ private fun BrowserScreen(
     }
 
     if (preview != null && profile != null) {
-        PreviewScreen(profile, token, preview!!, transferStore, onBack = { preview = null })
+        PreviewScreen(profile, preview!!, transferStore, sessionRepository, onBack = { preview = null })
         return
     }
 
     Column(Modifier.fillMaxSize()) {
         AppBar(profile?.displayName ?: stringResource(R.string.app_name), onBack, action = {
-            TextButton(onClick = onTransfers) { Text("â‡…") }
+            IconButton(onClick = onTransfers, modifier = Modifier.size(48.dp)) { Icon(painterResource(AppIcons.Transfers), stringResource(R.string.transfers)) }
         })
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (BrowserPath.normalize(path) != "/") TextButton(onClick = { path = BrowserPath.parent(path) }) { Text("â€¹") }
+            if (BrowserPath.normalize(path) != "/") TextButton(onClick = { path = BrowserPath.parent(path) }) { Text("‹") }
             Text(path, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            TextButton(onClick = { uploadPicker.launch(arrayOf("*/*")) }) { Text("+ ${stringResource(R.string.upload)}") }
+            IconButton(onClick = { uploadPicker.launch(arrayOf("*/*")) }, modifier = Modifier.size(48.dp)) { Icon(painterResource(AppIcons.Upload), stringResource(R.string.upload)) }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(stringResource(R.string.list), fontWeight = FontWeight.Medium)
@@ -370,21 +478,40 @@ private fun BrowserScreen(
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         error?.let { Text(stringResource(R.string.connection_failed, it), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+        downloadError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             items(resources, key = { it.path }) { item ->
                 FileRow(
                     item = item,
+                    settings = settings,
                     onOpen = { if (item.isDirectory) path = item.path else preview = item },
                     onDownload = {
                         if (profile != null) {
                             scope.launch {
-                                val destination = File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), item.name)
                                 val task = transferStore.enqueue(item.name, item.path, TransferDirection.Download, item.size)
+                                val treeUri = settings.downloadTreeUri
+                                val destination = if (treeUri == null) {
+                                    File(context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS), item.name)
+                                } else {
+                                    File(context.cacheDir, "download-${task.id}")
+                                }
+                                downloadError = null
                                 transferStore.update(task.id, 0, TransferState.Running)
-                                withContext(Dispatchers.IO) {
-                                    client.download(profile, token, item.path, destination) { read, _ -> transferStore.update(task.id, read, TransferState.Running) }
-                                }.onSuccess { transferStore.update(task.id, item.size, TransferState.Completed) }
-                                    .onFailure { transferStore.update(task.id, 0, TransferState.Failed, it.message) }
+                                val downloaded = withContext(Dispatchers.IO) {
+                                    sessionRepository.download(profile, item.path, destination) { read, _ -> transferStore.update(task.id, read, TransferState.Running) }
+                                }
+                                downloaded.onSuccess { file ->
+                                    val saved = treeUri?.let { selectedTree ->
+                                        withContext(Dispatchers.IO) { runCatching { copyToDownloadTree(context.contentResolver, selectedTree, file, item.name) } }
+                                    } ?: Result.success(Unit)
+                                    saved.onSuccess {
+                                        transferStore.update(task.id, item.size, TransferState.Completed)
+                                    }.onFailure {
+                                        transferStore.update(task.id, 0, TransferState.Failed, it.message)
+                                        downloadError = downloadDirectoryUnavailable
+                                    }
+                                    if (treeUri != null) file.delete()
+                                }.onFailure { transferStore.update(task.id, 0, TransferState.Failed, it.message) }
                             }
                         }
                     },
@@ -395,79 +522,27 @@ private fun BrowserScreen(
 }
 
 @Composable
-private fun FileRow(item: RemoteResource, onOpen: () -> Unit, onDownload: () -> Unit) {
+private fun FileRow(item: RemoteResource, settings: AppSettings, onOpen: () -> Unit, onDownload: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().height(72.dp).clickable(onClick = onOpen),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Row(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(40.dp))
+            Icon(painterResource(folderIconResource(settings.folderIconSet)), contentDescription = null, modifier = Modifier.size(40.dp), tint = Color.Unspecified)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (item.isDirectory) stringResource(R.string.folder) else formatBytes(item.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (item.isDirectory) Text("â€º", style = MaterialTheme.typography.titleLarge)
-            else TextButton(onClick = onDownload, contentPadding = PaddingValues(8.dp)) { Text("â†“") }
+            if (item.isDirectory) Text("›", style = MaterialTheme.typography.titleLarge)
+            else IconButton(onClick = onDownload, modifier = Modifier.size(48.dp)) { Icon(painterResource(AppIcons.Download), stringResource(R.string.download)) }
         }
     }
 }
 
 @Composable
-private fun PreviewScreen(
-    profile: ServerProfile,
-    token: String?,
-    item: RemoteResource,
-    transferStore: TransferStore,
-    onBack: () -> Unit,
-) {
-    val context = LocalContext.current
-    val client = remember { FileBrowserClient() }
-    val kind = PreviewRouter.kind(item.name)
-    var text by remember { mutableStateOf<String?>(null) }
-    var bitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(item.path) {
-        when (kind) {
-            PreviewKind.Text -> withContext(Dispatchers.IO) { client.readText(profile, token, item.path) }.onSuccess { text = it }.onFailure { error = it.message }
-            PreviewKind.Image -> {
-                val file = File(context.cacheDir, "preview-${item.name.hashCode()}")
-                withContext(Dispatchers.IO) { client.download(profile, token, item.path, file) }
-                    .onSuccess { bitmap = BitmapFactory.decodeFile(it.path)?.asImageBitmap() }
-                    .onFailure { error = it.message }
-            }
-            else -> Unit
-        }
-    }
-    Column(Modifier.fillMaxSize().background(Color(0xFF030712))) {
-        Surface(color = Color(0xFF030712)) { AppBar(item.name, onBack) }
-        Box(Modifier.weight(1f).fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-            when (kind) {
-                PreviewKind.Image -> bitmap?.let { Image(it, item.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) } ?: CircularProgressIndicator()
-                PreviewKind.Text -> Text(text ?: "Äang táº£iâ€¦", color = Color.White, modifier = Modifier.fillMaxSize())
-                PreviewKind.Video, PreviewKind.Audio -> AndroidView(
-                    factory = { ctx ->
-                        VideoView(ctx).apply {
-                            val controller = MediaController(ctx)
-                            controller.setAnchorView(this)
-                            setMediaController(controller)
-                            setVideoURI(Uri.parse(client.rawUrl(profile, item.path)), if (token.isNullOrBlank()) emptyMap() else mapOf("X-Auth" to token))
-                            setOnPreparedListener { start() }
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
-                PreviewKind.Unsupported -> Text(stringResource(R.string.preview_unsupported), color = Color.White)
-            }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        }
-        Text("${formatBytes(item.size)}  â€¢  ${PreviewRouter.mimeType(item.name)}", color = Color.White, modifier = Modifier.padding(16.dp))
-    }
-}
-
-@Composable
-private fun TransfersScreen(store: TransferStore, onBack: () -> Unit) {
+private fun LegacyTransfersScreen(store: TransferStore, onBack: () -> Unit) {
     var tasks by remember { mutableStateOf(store.all()) }
     Column(Modifier.fillMaxSize()) {
         AppBar(stringResource(R.string.transfers), onBack)
@@ -476,7 +551,7 @@ private fun TransfersScreen(store: TransferStore, onBack: () -> Unit) {
             items(tasks, key = { it.id }) { task ->
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row { Text(if (task.direction == TransferDirection.Download) "â†“" else "â†‘"); Spacer(Modifier.width(12.dp)); Text(task.name, modifier = Modifier.weight(1f)); Text(task.state.name) }
+                        Row { Text(if (task.direction == TransferDirection.Download) "↓" else "↑"); Spacer(Modifier.width(12.dp)); Text(task.name, modifier = Modifier.weight(1f)); Text(task.state.name) }
                         LinearProgressIndicator(progress = { task.progress }, modifier = Modifier.fillMaxWidth())
                         Text("${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (!task.isActive) TextButton(onClick = { store.remove(task.id); tasks = store.all() }) { Text(stringResource(R.string.delete)) }
@@ -488,7 +563,7 @@ private fun TransfersScreen(store: TransferStore, onBack: () -> Unit) {
 }
 
 @Composable
-private fun SettingsScreen(
+private fun LegacySettingsScreen(
     settings: AppSettings,
     onBack: () -> Unit,
     onTransfers: () -> Unit,
@@ -504,7 +579,7 @@ private fun SettingsScreen(
             Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Image(painterResource(R.drawable.server_icon), null, Modifier.size(48.dp))
                 Spacer(Modifier.width(12.dp))
-                Column { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium); Text("Android native â€¢ v1.0", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Column { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium); Text("Android native • v1.0", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
         Text(stringResource(R.string.theme), fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
@@ -527,10 +602,31 @@ private fun SettingsScreen(
     }
 }
 
-private fun formatBytes(bytes: Long): String = when {
+internal fun formatBytes(bytes: Long): String = when {
     bytes < 1_024 -> "$bytes B"
     bytes < 1_048_576 -> "%.1f KB".format(bytes / 1_024.0)
     bytes < 1_073_741_824 -> "%.1f MB".format(bytes / 1_048_576.0)
     else -> "%.1f GB".format(bytes / 1_073_741_824.0)
 }
 
+internal fun folderIconResource(set: FolderIconSet): Int = when (set) {
+    FolderIconSet.Classic -> AppIcons.FolderClassic
+    FolderIconSet.Color -> AppIcons.FolderColor
+    FolderIconSet.Outline -> AppIcons.FolderOutline
+}
+
+internal fun copyToDownloadTree(resolver: ContentResolver, treeUri: String, source: File, name: String) {
+    val tree = Uri.parse(treeUri)
+    val treeDocument = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+    var destination: Uri? = null
+    try {
+        destination = DocumentsContract.createDocument(resolver, treeDocument, "application/octet-stream", name)
+            ?: throw IOException("Provider did not create destination")
+        resolver.openOutputStream(destination, "w")?.use { output ->
+            source.inputStream().use { input -> input.copyTo(output) }
+        } ?: throw IOException("Provider did not open destination")
+    } catch (error: Throwable) {
+        destination?.let { runCatching { DocumentsContract.deleteDocument(resolver, it) } }
+        throw error
+    }
+}

@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.6 seconds
-Output:
 package com.j2team.fileserver.feature.browser
 
 object BrowserPath {
@@ -11,7 +8,7 @@ object BrowserPath {
     }
 
     fun child(parent: String, name: String): String {
-        require(name.isNotBlank() && name != "." && name != "..") { "Invalid resource name" }
+        require(name.isNotBlank() && name != "." && name != ".." && '/' !in name && '\\' !in name) { "Invalid resource name" }
         return if (normalize(parent) == "/") "/$name" else "${normalize(parent)}/$name"
     }
 
@@ -25,4 +22,3 @@ object BrowserPath {
             }
         }
 }
-

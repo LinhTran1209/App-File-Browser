@@ -1,10 +1,5 @@
-Exit code: 0
-Wall time: 0.5 seconds
-Output:
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.10.37</domain>
-    </domain-config>
+    <!-- File Server connects to user-configured LAN hosts, which commonly expose HTTP only. -->
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
-

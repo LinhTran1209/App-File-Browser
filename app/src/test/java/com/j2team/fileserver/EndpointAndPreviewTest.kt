@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.6 seconds
-Output:
 package com.j2team.fileserver
 
 import com.j2team.fileserver.core.network.Endpoint
@@ -40,4 +37,3 @@ class EndpointAndPreviewTest {
         )
     }
 }
-

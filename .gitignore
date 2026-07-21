@@ -1,0 +1,14 @@
+.gradle/
+.idea/
+.codex-tmp/
+.worktrees/
+build/
+**/build/
+local.properties
+*.iml
+*.jks
+*.keystore
+captures/
+.externalNativeBuild/
+.cxx/
+.superpowers/sdd/review-*.diff

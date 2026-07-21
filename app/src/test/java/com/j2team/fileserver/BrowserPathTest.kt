@@ -1,10 +1,8 @@
-Exit code: 0
-Wall time: 0.6 seconds
-Output:
 package com.j2team.fileserver
 
 import com.j2team.fileserver.feature.browser.BrowserPath
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class BrowserPathTest {
@@ -20,5 +18,11 @@ class BrowserPathTest {
         assertEquals("/home/linh3", BrowserPath.child("/home", "linh3"))
         assertEquals("/home", BrowserPath.child("/", "home"))
     }
-}
 
+    @Test
+    fun childRejectsNamesThatAreNotExactlyOnePathSegment() {
+        listOf(".", "..", "../other", "a/b", "a\\b").forEach { name ->
+            assertThrows(IllegalArgumentException::class.java) { BrowserPath.child("/home", name) }
+        }
+    }
+}

@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.8 seconds
-Output:
 package com.j2team.fileserver
 
 import androidx.compose.ui.test.assertIsDisplayed
@@ -21,5 +18,3 @@ class AppLaunchTest {
         compose.onNodeWithText("File Server").assertIsDisplayed()
     }
 }
-
-

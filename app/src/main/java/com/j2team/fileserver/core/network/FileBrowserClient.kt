@@ -1,18 +1,52 @@
-Exit code: 0
-Wall time: 0.5 seconds
-Output:
 package com.j2team.fileserver.core.network
 
 import com.j2team.fileserver.core.model.RemoteResource
+import com.j2team.fileserver.core.model.ResourcePermissions
+import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.model.ServerProfile
+import com.j2team.fileserver.core.session.ApiResult
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Base64
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.EmptyCoroutineContext
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+data class PreviewProbe(val mimeType: String?, val sample: ByteArray)
+
+/** Atomically pairs cancellation with publication of resources that must be closed. */
+internal class CancellableRequestOwner {
+    private val cancelled = AtomicBoolean(false)
+    private val cleanup = AtomicReference<(() -> Unit)?>(null)
+
+    fun cancel(): (() -> Unit)? {
+        cancelled.set(true)
+        return cleanup.getAndSet(null)
+    }
+
+    fun publish(close: () -> Unit): Boolean {
+        cleanup.set(close)
+        if (!cancelled.get()) return true
+        cleanup.getAndSet(null)?.invoke()
+        return false
+    }
+
+    fun clear() {
+        cleanup.set(null)
+    }
+
+    fun isCancelled(): Boolean = cancelled.get()
+}
 
 class FileBrowserClient {
     /** Downloads a remote resource to [destination] without buffering it in memory. */
@@ -22,11 +56,20 @@ class FileBrowserClient {
         remotePath: String,
         destination: File,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
-    ): Result<File> = runCatching {
+    ): Result<File> = downloadResult(profile, token, remotePath, destination, onProgress).toResult()
+
+    fun downloadResult(
+        profile: ServerProfile,
+        token: String? = null,
+        remotePath: String,
+        destination: File,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): ApiResult<File> = try {
         require(remotePath.isNotBlank()) { "Remote path is required" }
         val connection = open(rawUrl(profile, remotePath), "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
-        require(connection.responseCode in 200..299) { "Download failed (${connection.responseCode})" }
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Download failed ($code)"))
 
         destination.parentFile?.mkdirs()
         val temporary = File(destination.parentFile ?: File("."), ".${destination.name}.part")
@@ -47,39 +90,132 @@ class FileBrowserClient {
             }
             if (destination.exists() && !destination.delete()) throw IOException("Unable to replace destination")
             if (!temporary.renameTo(destination)) throw IOException("Unable to finalize download")
-            destination
+            ApiResult(code, destination)
         } finally {
             if (temporary.exists()) temporary.delete()
         }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
-    /** Uploads one local file as multipart/form-data to a remote directory. */
+    /** Streams a download to a caller-owned output stream, allowing SAF destinations without a temporary disk file. */
+    suspend fun downloadToResult(
+        profile: ServerProfile,
+        token: String? = null,
+        remotePath: String,
+        openDestination: () -> OutputStream,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): ApiResult<Unit> = suspendCancellableCoroutine { continuation ->
+        val activeConnection = AtomicReference<HttpURLConnection?>(null)
+        val activeInput = AtomicReference<InputStream?>(null)
+        val activeOutput = AtomicReference<OutputStream?>(null)
+        val requestOwner = CancellableRequestOwner()
+        val cancelActiveRequest = {
+            val cleanup = requestOwner.cancel()
+            if (cleanup != null) Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable { cleanup() })
+            Unit
+        }
+        val closeActiveRequest = {
+            activeInput.get()?.runCatching { close() }
+            activeOutput.get()?.runCatching { close() }
+            activeConnection.get()?.disconnect()
+            Unit
+        }
+        continuation.invokeOnCancellation {
+            cancelActiveRequest()
+        }
+        Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable {
+            val result = try {
+                if (requestOwner.isCancelled()) return@Runnable
+                require(remotePath.isNotBlank()) { "Remote path is required" }
+                val connection = open(rawUrl(profile, remotePath), "GET")
+                activeConnection.set(connection)
+                if (!requestOwner.publish(closeActiveRequest)) return@Runnable
+                if (requestOwner.isCancelled()) return@Runnable
+                if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+                val code = connection.responseCode
+                if (code !in 200..299) ApiResult(code, error = IOException("Download failed ($code)")) else {
+                    val total = connection.contentLengthLong
+                    var copied = 0L
+                    connection.inputStream.use { input ->
+                        activeInput.set(input)
+                        openDestination().use { output ->
+                            activeOutput.set(output)
+                            val buffer = ByteArray(8 * 1024)
+                            while (continuation.isActive) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                copied += count
+                                onProgress?.invoke(copied, total)
+                            }
+                        }
+                    }
+                    ApiResult(code, Unit)
+                }
+            } catch (error: Throwable) {
+                ApiResult(-1, error = error)
+            } finally {
+                requestOwner.clear()
+                activeConnection.getAndSet(null)?.disconnect()
+            }
+            if (continuation.isActive) continuation.resumeWith(Result.success(result))
+        })
+    }
+
+    /** Reads only a bounded, authenticated prefix and preserves the server Content-Type for preview routing. */
+    fun previewProbeResult(profile: ServerProfile, token: String? = null, remotePath: String, maxBytes: Int = 64 * 1024): ApiResult<PreviewProbe> = try {
+        require(maxBytes > 0) { "maxBytes must be positive" }
+        val connection = open(rawUrl(profile, remotePath), "GET")
+        try {
+            if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+            connection.setRequestProperty("Range", "bytes=0-${maxBytes - 1}")
+            val code = connection.responseCode
+            if (code !in 200..299) return ApiResult(code, error = IOException("Preview probe failed ($code)"))
+            val sample = connection.inputStream.use { input ->
+                val output = ByteArrayOutputStream(maxBytes)
+                val buffer = ByteArray(minOf(8 * 1024, maxBytes))
+                while (output.size() < maxBytes) {
+                    val count = input.read(buffer, 0, minOf(buffer.size, maxBytes - output.size()))
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            }
+            ApiResult(code, PreviewProbe(connection.contentType?.substringBefore(';')?.trim()?.takeIf(String::isNotEmpty), sample))
+        } finally {
+            connection.disconnect()
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    /** Uploads the file body exactly as-is to File Browser's resource endpoint. */
     fun upload(
         profile: ServerProfile,
         token: String? = null,
         parentPath: String = "/",
         file: File,
+        remoteName: String = file.name,
         onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null
     ): Result<String> = runCatching {
         require(file.isFile) { "Upload file does not exist: ${file.name}" }
-        val boundary = "----FileServer${System.currentTimeMillis()}"
-        val connection = open(apiUrl(profile, "/api/resources", parentPath), "POST").apply {
+        val destinationPath = parentPath.trimEnd('/') + "/" + remoteName
+        // Folder retries may encounter a partially uploaded remote file. Replace it instead of
+        // failing the whole batch with 409 Conflict.
+        val connection = open(apiUrl(profile, "/api/resources", destinationPath) + "?override=true", "POST").apply {
             doOutput = true
-            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            readTimeout = 60_000
+            setRequestProperty("Content-Type", "application/octet-stream")
             setRequestProperty("Accept", "application/json")
             if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
         }
-        val prefix = "--$boundary\r\n" +
-            "Content-Disposition: form-data; name=\"file\"; filename=\"${file.name.replace("\"", "")}\"\r\n" +
-            "Content-Type: application/octet-stream\r\n\r\n"
-        val suffix = "\r\n--$boundary--\r\n"
-        val total = prefix.toByteArray().size + file.length() + suffix.toByteArray().size
-        var sent = 0L
+        val total = file.length()
+        connection.setFixedLengthStreamingMode(total)
         connection.outputStream.use { output ->
-            val head = prefix.toByteArray()
-            output.write(head); sent += head.size; onProgress?.invoke(sent, total)
             FileInputStream(file).use { input ->
                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var sent = 0L
                 while (true) {
                     val count = input.read(buffer)
                     if (count < 0) break
@@ -88,14 +224,78 @@ class FileBrowserClient {
                     onProgress?.invoke(sent, total)
                 }
             }
-            val tail = suffix.toByteArray()
-            output.write(tail); sent += tail.size; onProgress?.invoke(sent, total)
         }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
         val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
         require(code in 200..299) { "Upload failed ($code)" }
         body
+    }
+
+    suspend fun createDirectory(profile: ServerProfile, token: String? = null, path: String): Result<Unit> = runCatching {
+        require(path.isNotBlank() && path != "/") { "Directory path is required" }
+        // File Browser distinguishes a directory from an empty file by the trailing slash.
+        val directoryPath = path.trimEnd('/') + "/"
+        val connection = open(apiUrl(profile, "/api/resources", directoryPath), "POST").apply {
+            setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+        }
+        val code = connection.responseCode
+        require(code in 200..299) { requestError("Unable to create folder", code, connection) }
+    }
+
+    /** Deletes resources one by one so an authorization rejection cannot delete later selections. */
+    suspend fun delete(profile: ServerProfile, token: String? = null, paths: List<String>): Result<Unit> = runCatching {
+        require(paths.isNotEmpty()) { "At least one resource is required" }
+        paths.forEach { path ->
+            require(path.isNotBlank() && path != "/") { "Resource path is required" }
+            val connection = open(apiUrl(profile, "/api/resources", path), "DELETE").apply {
+                setRequestProperty("Accept", "application/json")
+                if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            }
+            val code = connection.responseCode
+            require(code in 200..299) { requestError("Unable to delete resource", code, connection) }
+        }
+    }
+
+    suspend fun move(
+        profile: ServerProfile,
+        token: String? = null,
+        resources: List<RemoteResource>,
+        destinationDirectory: String,
+    ): Result<Unit> = runCatching {
+        require(resources.isNotEmpty()) { "At least one resource is required" }
+        val destinationParent = destinationDirectory.trim().let { if (it.isEmpty()) "/" else "/" + it.trim('/') }
+        resources.forEach { resource ->
+            val sourcePath = resource.path + if (resource.isDirectory && !resource.path.endsWith('/')) "/" else ""
+            val destinationPath = destinationParent.trimEnd('/') + "/" + resource.name
+            val encodedDestination = java.net.URLEncoder.encode(destinationPath, Charsets.UTF_8.name()).replace("+", "%20")
+            val url = apiUrl(profile, "/api/resources", sourcePath) +
+                "?action=rename&destination=$encodedDestination&override=false&rename=false"
+            val connection = open(url, "PATCH").apply {
+                setRequestProperty("Accept", "application/json")
+                if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            }
+            val code = connection.responseCode
+            require(code in 200..299) { requestError("Unable to move resource", code, connection) }
+        }
+    }
+
+    fun thumbnailResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        destination: File,
+    ): ApiResult<File> = try {
+        val connection = open(apiUrl(profile, "/api/preview/thumb", remotePath), "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Thumbnail unavailable ($code)"))
+        destination.parentFile?.mkdirs()
+        connection.inputStream.use { input -> destination.outputStream().buffered().use(input::copyTo) }
+        ApiResult(code, destination)
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     fun login(profile: ServerProfile, username: String, password: String): Result<String> = runCatching {
@@ -107,19 +307,70 @@ class FileBrowserClient {
         connection.inputStream.bufferedReader().use { it.readText().trim('"', '\n', ' ') }
     }
 
-    fun list(profile: ServerProfile, token: String? = null, path: String = "/"): Result<List<RemoteResource>> = runCatching {
-        val url = profile.endpoint.trimEnd('/') + "/api/resources" + if (path.startsWith("/")) path else "/$path"
+    fun isReachable(profile: ServerProfile): Boolean = try {
+        val connection = (URL(profile.endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 2_500
+            readTimeout = 2_500
+            instanceFollowRedirects = false
+            useCaches = false
+        }
+        connection.responseCode in 100..599
+    } catch (_: Throwable) {
+        false
+    }
+
+    fun list(profile: ServerProfile, token: String? = null, path: String = "/"): Result<List<RemoteResource>> =
+        listResult(profile, token, path).toResult()
+
+    fun listResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<List<RemoteResource>> =
+        listWithPermissionsResult(profile, token, path).map { it.resources }
+
+    /** Reads File Browser v2's authenticated self-user record: `{"perm":{"download", "create", "delete"}}`. */
+    fun currentPermissionsResult(profile: ServerProfile, token: String?): ApiResult<ResourcePermissions> = try {
+        val userId = currentUserId(token) ?: return ApiResult(-1, error = IOException("Unable to identify the authenticated user"))
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/users/$userId", "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Unable to load permissions ($code)"))
+        val response = connection.inputStream.bufferedReader().use { it.readText() }
+        val permissions = permissionObject(response).orEmpty()
+        ApiResult(code, ResourcePermissions(
+            canDownload = permissionEnabled(permissions, "download"),
+            // File Browser v2 uses create permission for both folder creation and multipart upload.
+            canUpload = permissionEnabled(permissions, "create"),
+            canCreate = permissionEnabled(permissions, "create"),
+            canDelete = permissionEnabled(permissions, "delete"),
+        ))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun listWithPermissionsResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<ResourceListing> = try {
+        val url = apiUrl(profile, "/api/resources", path)
         val connection = open(url, "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
-        require(connection.responseCode in 200..299) { "Unable to list files (${connection.responseCode})" }
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Unable to list files ($code)"))
         val body = connection.inputStream.bufferedReader().use { it.readText() }
-        val array = if (body.trimStart().startsWith("[")) JSONArray(body) else JSONObject(body).optJSONArray("items") ?: JSONArray()
-        buildList {
+        val response = body.takeUnless { it.trimStart().startsWith("[") }?.let(::JSONObject)
+        val responsePermissions = response?.let(::permissionsOf) ?: ResourcePermissions()
+        val array = if (response == null) JSONArray(body) else response.optJSONArray("items") ?: JSONArray()
+        ApiResult(code, ResourceListing(buildList {
             for (index in 0 until array.length()) {
                 val item = array.getJSONObject(index)
-                add(RemoteResource(item.optString("name"), item.optString("path", path), item.optBoolean("isDir"), item.optLong("size")))
+                add(RemoteResource(
+                    name = item.optString("name"),
+                    path = item.optString("path", path),
+                    isDirectory = directoryOf(item),
+                    size = item.optLong("size"),
+                    mimeType = item.optString("mimeType").ifBlank { item.optString("mime") }.takeIf { it.isNotBlank() },
+                    permissions = permissionsOf(item, responsePermissions),
+                ))
             }
-        }
+        }, responsePermissions))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     fun rawUrl(profile: ServerProfile, remotePath: String): String =
@@ -130,10 +381,18 @@ class FileBrowserClient {
         token: String?,
         remotePath: String,
         maxBytes: Int = 1_000_000,
-    ): Result<String> = runCatching {
+    ): Result<String> = readTextResult(profile, token, remotePath, maxBytes).toResult()
+
+    fun readTextResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        maxBytes: Int = 1_000_000,
+    ): ApiResult<String> = try {
         val connection = open(rawUrl(profile, remotePath), "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
-        require(connection.responseCode in 200..299) { "Unable to open file (${connection.responseCode})" }
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException("Unable to open file ($code)"))
         connection.inputStream.buffered().use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -143,8 +402,10 @@ class FileBrowserClient {
                 output.write(buffer, 0, count)
             }
             require(output.size() <= maxBytes) { "Text file is too large to preview" }
-            output.toString(Charsets.UTF_8.name())
+            ApiResult(code, output.toString(Charsets.UTF_8.name()))
         }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     private fun open(url: String, method: String): HttpURLConnection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -152,6 +413,7 @@ class FileBrowserClient {
         connectTimeout = 8_000
         readTimeout = 15_000
         useCaches = false
+        instanceFollowRedirects = false
     }
 
     private fun apiUrl(profile: ServerProfile, apiPath: String, path: String): String {
@@ -162,5 +424,132 @@ class FileBrowserClient {
     private fun encodePath(path: String): String = path.split('/').joinToString("/") { segment ->
         java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
     }
+
+    private fun permissionsOf(item: JSONObject, inherited: ResourcePermissions = ResourcePermissions()): ResourcePermissions {
+        val permissions = item.optJSONObject("permissions") ?: item
+        fun allowed(name: String, inheritedValue: Boolean): Boolean = when {
+            permissions.has(name) -> permissions.optBoolean(name)
+            item !== permissions && item.has(name) -> item.optBoolean(name)
+            else -> inheritedValue
+        }
+        return ResourcePermissions(
+            canDownload = allowed("canDownload", inherited.canDownload),
+            canUpload = allowed("canUpload", inherited.canUpload),
+            canCreate = allowed("canCreate", inherited.canCreate),
+            canDelete = allowed("canDelete", inherited.canDelete),
+        )
+    }
+
+    private fun directoryOf(item: JSONObject): Boolean {
+        val type = item.optString("type").lowercase()
+        val mime = item.optString("mimeType").ifBlank { item.optString("mime") }.lowercase()
+        return item.optBoolean("isDir") ||
+            item.optBoolean("isDirectory") ||
+            type in setOf("dir", "directory", "folder") ||
+            mime == "inode/directory"
+    }
+
+    private fun requestError(prefix: String, code: Int, connection: HttpURLConnection): String {
+        val message = connection.errorStream?.bufferedReader()?.use { it.readText().trim() }.orEmpty()
+        return if (message.isBlank()) "$prefix ($code)" else "$prefix ($code): $message"
+    }
+
+    private fun currentUserId(token: String?): Long? = runCatching {
+        val payload = token?.split('.')?.getOrNull(1) ?: throw IllegalArgumentException("Missing JWT payload")
+        val json = String(Base64.getUrlDecoder().decode(payload), Charsets.UTF_8)
+        Regex("\\\"id\\\"\\s*:\\s*(\\d+)").find(json)?.groupValues?.get(1)?.toLong()?.takeIf { it > 0 }
+    }.getOrNull()
+
+    private fun permissionEnabled(permissions: String, name: String): Boolean =
+        Regex("\\\"${Regex.escape(name)}\\\"\\s*:\\s*true\\b").containsMatchIn(permissions)
+
+    /** Extracts only a JSON object assigned to the official `perm` field; malformed values stay denied. */
+    private fun permissionObject(response: String): String? {
+        val field = Regex("\\\"perm\\\"\\s*:").find(response) ?: return null
+        val start = response.indexOf('{', field.range.last + 1)
+        if (start < 0) return null
+        var depth = 0
+        for (index in start until response.length) {
+            when (response[index]) {
+                '{' -> depth += 1
+                '}' -> {
+                    depth -= 1
+                    if (depth == 0) return response.substring(start, index + 1)
+                }
+            }
+        }
+        return null
+    }
+
+    companion object {
+        /** Exposed for tests and callers which need the exact File Browser resources destination. */
+        fun encodedResourcePath(path: String): String {
+            val cleanPath = path.trim().let { if (it.isEmpty() || it == "/") "/" else if (it.startsWith("/")) it else "/$it" }
+            return "/api/resources" + cleanPath.split('/').joinToString("/") { segment ->
+                java.net.URLEncoder.encode(segment, Charsets.UTF_8.name()).replace("+", "%20")
+            }
+        }
+    }
 }
 
+/** Streaming single-file multipart writer. It never buffers file content or permits progress past [fileSize]. */
+object MultipartEncoder {
+    private const val CRLF = "\r\n"
+
+    fun escapeFilename(fileName: String): String = buildString(fileName.length) {
+        fileName.forEach { char ->
+            when (char) {
+                '"' -> append("%22")
+                '\\' -> append("%5C")
+                '\r' -> append("%0D")
+                '\n' -> append("%0A")
+                else -> append(char)
+            }
+        }
+    }
+
+    fun encodedSize(boundary: String, fileName: String, fileSize: Long): Long =
+        prefix(boundary, fileName).size.toLong() + fileSize + suffix(boundary).size
+
+    fun write(
+        output: OutputStream,
+        boundary: String,
+        fileName: String,
+        input: InputStream,
+        fileSize: Long,
+        onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null,
+    ): Long {
+        require(fileSize >= 0) { "File size cannot be negative" }
+        val head = prefix(boundary, fileName)
+        val tail = suffix(boundary)
+        val total = head.size.toLong() + fileSize + tail.size
+        var sent = 0L
+        output.write(head)
+        sent += head.size
+        onProgress?.invoke(sent, total)
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var copied = 0L
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count.toLong() > fileSize - copied) throw IOException("Input exceeded declared file size")
+            output.write(buffer, 0, count)
+            copied += count
+            sent += count
+            onProgress?.invoke(sent, total)
+        }
+        if (copied != fileSize) throw IOException("Input size did not match declared file size")
+        output.write(tail)
+        sent += tail.size
+        onProgress?.invoke(sent, total)
+        return sent
+    }
+
+    private fun prefix(boundary: String, fileName: String): ByteArray = (
+        "--$boundary$CRLF" +
+            "Content-Disposition: form-data; name=\"file\"; filename=\"${escapeFilename(fileName)}\"$CRLF" +
+            "Content-Type: application/octet-stream$CRLF$CRLF"
+        ).toByteArray(Charsets.UTF_8)
+
+    private fun suffix(boundary: String): ByteArray = "$CRLF--$boundary--$CRLF".toByteArray(Charsets.UTF_8)
+}

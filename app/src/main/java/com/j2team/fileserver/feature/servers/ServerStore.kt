@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.7 seconds
-Output:
 package com.j2team.fileserver.feature.servers
 
 import android.content.Context
@@ -43,4 +40,3 @@ class ServerStore(context: Context) {
         put("id", id); put("name", displayName); put("scheme", scheme); put("host", host); put("port", port); put("path", basePath)
     }
 }
-

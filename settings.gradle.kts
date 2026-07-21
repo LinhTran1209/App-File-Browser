@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.6 seconds
-Output:
 pluginManagement {
     repositories {
         google()
@@ -19,5 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "File Server"
 include(":app")
-
 
