@@ -15,6 +15,7 @@ class SessionRepository(
     private val transport: FileBrowserClient,
     private val tokenStore: MutableMap<String, String> = ConcurrentHashMap(),
 ) {
+    fun isReachable(profile: ServerProfile): Boolean = transport.isReachable(profile)
     suspend fun open(profile: ServerProfile): Result<AuthenticatedSession> =
         authenticated(profile) { token ->
             transport.listResult(profile, token, profile.basePath).map { Unit }
@@ -86,11 +87,14 @@ class SessionRepository(
     suspend fun readText(profile: ServerProfile, remotePath: String): Result<String> =
         authenticated(profile) { token -> transport.readTextResult(profile, token, remotePath) }
 
-    /** Returns a verified token for an idempotent raw-media GET request. */
+    /**
+     * Returns the active token without probing an unrelated directory first.
+     * The media request itself is the authoritative authentication check and can
+     * safely trigger one renewal when the server answers with 401/403.
+     */
     suspend fun streamingToken(profile: ServerProfile): Result<String> =
-        authenticated(profile) { candidate ->
-            transport.listResult(profile, candidate, profile.basePath).map { candidate }
-        }
+        tokenStore[profile.id]?.takeIf { it.isNotBlank() }?.let(Result.Companion::success)
+            ?: renew(profile)
 
     /** A rejected Media3 raw GET can safely be prepared again after this renewal. */
     suspend fun renewStreamingToken(profile: ServerProfile): Result<String> = renew(profile)
@@ -111,6 +115,15 @@ class SessionRepository(
             onFailure = { error -> Result.failure(error) },
         )
 
+    suspend fun move(profile: ServerProfile, resources: List<RemoteResource>, destinationDirectory: String): Result<Unit> =
+        mutationToken(profile).fold(
+            onSuccess = { token -> transport.move(profile, token, resources, destinationDirectory) },
+            onFailure = { error -> Result.failure(error) },
+        )
+
+    suspend fun thumbnail(profile: ServerProfile, remotePath: String, destination: File): Result<File> =
+        authenticated(profile) { token -> transport.thumbnailResult(profile, token, remotePath, destination) }
+
     /**
      * Refreshes authentication with a safe read first, then sends the upload exactly once.
      * The upload itself is never replayed because its acceptance cannot be determined safely.
@@ -119,10 +132,11 @@ class SessionRepository(
         profile: ServerProfile,
         parentPath: String,
         file: File,
+        remoteName: String = file.name,
         onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null,
     ): Result<String> {
         val token = mutationToken(profile).getOrElse { return Result.failure(it) }
-        return transport.upload(profile, token, parentPath, file, onProgress)
+        return transport.upload(profile, token, parentPath, file, remoteName, onProgress)
     }
 
     private suspend fun mutationToken(profile: ServerProfile): Result<String> =
@@ -144,5 +158,10 @@ class SessionRepository(
     fun clear(profileId: String) {
         tokenStore.remove(profileId)
         secretStore.delete(profileId)
+    }
+
+    fun clearProcessSession() {
+        tokenStore.clear()
+        secretStore.clearAll()
     }
 }

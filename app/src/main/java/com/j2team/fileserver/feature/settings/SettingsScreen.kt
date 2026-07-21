@@ -5,6 +5,8 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -55,6 +57,7 @@ internal fun SettingsScreen(
     val launchDirectoryPicker = directoryPicker(onDirectorySelection)
     Column(Modifier.fillMaxSize()) {
         SettingsAppBar(onBack)
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
         Card(Modifier.fillMaxWidth().padding(16.dp).height(96.dp), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
             Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(painterResource(AppIcons.Settings), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
@@ -86,6 +89,7 @@ internal fun SettingsScreen(
         }
         Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { Text(stringResource(R.string.show_hidden), modifier = Modifier.weight(1f)); Switch(settings.showHiddenFiles, { onChanged(settings.copy(showHiddenFiles = it)) }) }
         Button(onClick = onTransfers, modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp), shape = MaterialTheme.shapes.large) { Icon(painterResource(AppIcons.Transfers), null); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.open_transfers)) }
+        }
     }
 }
 

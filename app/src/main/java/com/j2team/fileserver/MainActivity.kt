@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.LocaleList
 import android.provider.DocumentsContract
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,6 +34,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -76,6 +78,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) applyLanguage(SettingsStore(this).read().language)
         setContent {
             FileServerApp(
@@ -86,6 +89,13 @@ class MainActivity : ComponentActivity() {
                 onLanguageChanged = ::applyLanguage,
             )
         }
+    }
+
+    override fun onDestroy() {
+        if (isFinishing && !isChangingConfigurations) {
+            (application as FileServerApp).sessionRepository.clearProcessSession()
+        }
+        super.onDestroy()
     }
 
     private fun applyLanguage(language: AppLanguage) {
@@ -124,10 +134,14 @@ private fun FileServerApp(
             selected?.let { TransferCoordinator(context.applicationContext, transferStore, sessionRepository, it) }
         }
 
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Surface(
+            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+            color = MaterialTheme.colorScheme.background,
+        ) {
             when (screen) {
                 Screen.Servers -> ServersScreen(
                     profiles = profiles,
+                    sessionRepository = sessionRepository,
                     onAdd = { screenName = Screen.AddServer.name },
                     error = connectionError,
                     onOpen = { profile ->
@@ -197,7 +211,12 @@ private fun FileServerApp(
 }
 
 @Composable
-internal fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Composable () -> Unit)? = null) {
+internal fun AppBar(
+    title: String,
+    onBack: (() -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
+    action: (@Composable () -> Unit)? = null,
+) {
     Surface(color = MaterialTheme.colorScheme.surface) {
         Row(
             Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
@@ -208,6 +227,7 @@ internal fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Compo
                     Text("‹", style = MaterialTheme.typography.headlineMedium)
                 }
             }
+            leading?.invoke()
             Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             action?.invoke()
         }
@@ -217,6 +237,7 @@ internal fun AppBar(title: String, onBack: (() -> Unit)? = null, action: (@Compo
 @Composable
 private fun ServersScreen(
     profiles: List<ServerProfile>,
+    sessionRepository: SessionRepository,
     error: String?,
     onAdd: () -> Unit,
     onOpen: (ServerProfile) -> Unit,
@@ -224,7 +245,10 @@ private fun ServersScreen(
     onSettings: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
-        AppBar(stringResource(R.string.app_name), action = {
+        AppBar(stringResource(R.string.app_name), leading = {
+            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(40.dp))
+            Spacer(Modifier.width(10.dp))
+        }, action = {
             IconButton(onClick = onSettings, modifier = Modifier.size(48.dp)) {
                 Icon(painterResource(AppIcons.Settings), contentDescription = stringResource(R.string.settings))
             }
@@ -240,21 +264,31 @@ private fun ServersScreen(
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (profiles.isEmpty()) item { Text(stringResource(R.string.server_empty), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(profiles, key = { it.id }) { profile ->
-                    ServerCard(profile, { onOpen(profile) }, { onDelete(profile) })
+                    ServerCard(profile, sessionRepository, { onOpen(profile) }, { onDelete(profile) })
                 }
             }
             Button(
                 onClick = onAdd,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp).height(56.dp),
                 shape = RoundedCornerShape(18.dp),
-            ) { Text("+  ${stringResource(R.string.add_server)}") }
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("+", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.add_server), style = MaterialTheme.typography.titleMedium)
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun ServerCard(profile: ServerProfile, sessionRepository: SessionRepository, onClick: () -> Unit, onDelete: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
+    var online by remember(profile.endpoint) { mutableStateOf(false) }
+    LaunchedEffect(profile.endpoint) {
+        online = withContext(Dispatchers.IO) { sessionRepository.isReachable(profile) }
+    }
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth().height(112.dp),
@@ -269,13 +303,18 @@ private fun ServerCard(profile: ServerProfile, onClick: () -> Unit, onDelete: ()
                 Text(profile.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(profile.endpoint.removeSuffix("/"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             }
-            Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondary) {
-                Text(stringResource(R.string.online), color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+            Surface(shape = RoundedCornerShape(50), color = if (online) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.error) {
+                Text(stringResource(if (online) R.string.online else R.string.offline), color = Color.White, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
             }
             Box {
-                TextButton(onClick = { menu = true }, contentPadding = PaddingValues(8.dp)) { Text("⋮") }
+                TextButton(onClick = { menu = true }, modifier = Modifier.size(52.dp), contentPadding = PaddingValues(0.dp)) {
+                    Text("⋮", style = MaterialTheme.typography.headlineMedium)
+                }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { menu = false; onDelete() })
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.delete), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
+                        onClick = { menu = false; onDelete() },
+                    )
                 }
             }
         }
@@ -293,7 +332,7 @@ private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit
             OutlinedTextField(
                 endpoint, { endpoint = it; error = null },
                 label = { Text(stringResource(R.string.server_address)) },
-                placeholder = { Text("http://192.168.10.37:8888") },
+                placeholder = { Text("http://192.168.1.10:8080") },
                 modifier = Modifier.fillMaxWidth().height(64.dp), singleLine = true, shape = RoundedCornerShape(12.dp),
             )
             OutlinedTextField(

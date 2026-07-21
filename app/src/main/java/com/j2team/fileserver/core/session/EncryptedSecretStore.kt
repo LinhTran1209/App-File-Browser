@@ -10,12 +10,38 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import java.util.concurrent.ConcurrentHashMap
 
 interface SecretStore {
     /** Consumes [credential.password] and clears it before returning. */
     fun put(profileId: String, credential: StoredCredential)
     fun get(profileId: String): StoredCredential?
     fun delete(profileId: String)
+    fun clearAll() = Unit
+}
+
+/** Credentials live only for the lifetime of the app process. */
+class ProcessSecretStore : SecretStore {
+    private val credentials = ConcurrentHashMap<String, StoredCredential>()
+
+    override fun put(profileId: String, credential: StoredCredential) {
+        val copy = StoredCredential(credential.username, credential.password.copyOf())
+        credential.password.fill('\u0000')
+        credentials.put(profileId, copy)?.password?.fill('\u0000')
+    }
+
+    override fun get(profileId: String): StoredCredential? = credentials[profileId]?.let {
+        StoredCredential(it.username, it.password.copyOf())
+    }
+
+    override fun delete(profileId: String) {
+        credentials.remove(profileId)?.password?.fill('\u0000')
+    }
+
+    override fun clearAll() {
+        credentials.values.forEach { it.password.fill('\u0000') }
+        credentials.clear()
+    }
 }
 
 class EncryptedSecretStore(context: Context) : SecretStore {
@@ -62,6 +88,10 @@ class EncryptedSecretStore(context: Context) : SecretStore {
 
     override fun delete(profileId: String) {
         preferences.edit().remove(profileId).apply()
+    }
+
+    override fun clearAll() {
+        preferences.edit().clear().apply()
     }
 
     private fun secretKey(): SecretKey {
