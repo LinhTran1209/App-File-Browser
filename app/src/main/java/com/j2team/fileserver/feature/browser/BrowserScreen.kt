@@ -76,7 +76,6 @@ import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.feature.preview.PreviewScreen
 import com.j2team.fileserver.feature.preview.PreviewKind
 import com.j2team.fileserver.feature.preview.PreviewRouter
-import com.j2team.fileserver.feature.preview.VideoThumbnailExtractor
 import com.j2team.fileserver.R
 import com.j2team.fileserver.folderIconResource
 import com.j2team.fileserver.formatBytes
@@ -755,20 +754,14 @@ private fun ResourceVisual(
             if (cachedBitmap != null) {
                 AppCacheManager.recordAccess(cacheFile)
                 cachedBitmap
-            } else {
+            } else if (previewKind == PreviewKind.Image) {
                 cacheFile.delete()
                 cacheFile.parentFile?.mkdirs()
-                when (previewKind) {
-                    PreviewKind.Video -> VideoThumbnailExtractor.extract(
-                        profile = profile,
-                        item = item,
-                        sessionRepository = sessionRepository,
-                        destination = cacheFile,
-                    )
-                    else -> sessionRepository.thumbnail(profile, item.path, cacheFile)
-                }
+                sessionRepository.thumbnail(profile, item.path, cacheFile)
                 AppCacheManager.recordWrite(context, cacheFile)
                 BitmapFactory.decodeFile(cacheFile.path)
+            } else {
+                null
             }
         }
     }
