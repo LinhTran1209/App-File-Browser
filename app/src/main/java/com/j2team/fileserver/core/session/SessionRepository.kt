@@ -6,6 +6,7 @@ import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.network.PreviewProbe
+import com.j2team.fileserver.core.network.ThumbnailServiceClient
 import java.io.File
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
@@ -13,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 class SessionRepository(
     private val secretStore: SecretStore,
     private val transport: FileBrowserClient,
+    private val thumbnailTransport: ThumbnailServiceClient = ThumbnailServiceClient(),
     private val tokenStore: MutableMap<String, String> = ConcurrentHashMap(),
 ) {
     fun isReachable(profile: ServerProfile): Boolean = transport.isReachable(profile)
@@ -129,6 +131,16 @@ class SessionRepository(
 
     suspend fun thumbnail(profile: ServerProfile, remotePath: String, destination: File): Result<File> =
         authenticated(profile) { token -> transport.thumbnailResult(profile, token, remotePath, destination) }
+
+    suspend fun cachedVideoThumbnail(profile: ServerProfile, remotePath: String, destination: File): Result<File> =
+        authenticated(profile) { token ->
+            thumbnailTransport.cachedThumbnailResult(profile, token, remotePath, destination)
+        }
+
+    suspend fun requestVideoThumbnail(profile: ServerProfile, remotePath: String): Result<Unit> =
+        authenticated(profile) { token ->
+            thumbnailTransport.requestThumbnailResult(profile, token, remotePath)
+        }
 
     /**
      * Refreshes authentication with a safe read first, then sends the upload exactly once.

@@ -4,9 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
-import android.graphics.Bitmap
 import android.graphics.drawable.ColorDrawable
-import android.view.TextureView
 import android.view.ViewGroup
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -34,7 +32,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -53,7 +50,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -67,6 +63,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.compose.PlayerSurface
 import com.j2team.fileserver.R
 import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
@@ -205,13 +202,15 @@ internal fun MediaPreview(
     var localError by remember(sessionStateKey) { mutableStateOf<String?>(null) }
     var retryState by remember(sessionStateKey) { mutableStateOf(StreamRetryState()) }
     var savedPositionMs by rememberSaveable(sessionStateKey) { mutableLongStateOf(0L) }
-    var thumbnailCaptureStarted by remember(sessionStateKey) {
-        mutableStateOf(VideoThumbnailCache.exists(context, profile.id, item.path))
-    }
     LaunchedEffect(profile.id, item.path) {
         sessionRepository.streamingToken(profile)
             .onSuccess { token = it }
             .onFailure { localError = authError }
+    }
+    LaunchedEffect(profile.id, item.path, mimeType) {
+        if (mimeType?.startsWith("video/") == true) {
+            sessionRepository.requestVideoThumbnail(profile, item.path)
+        }
     }
 
     Column(
@@ -231,16 +230,6 @@ internal fun MediaPreview(
                 initialPositionMs = savedPositionMs,
                 reprepareGeneration = retryState.reprepareGeneration,
                 onPositionChanged = { savedPositionMs = it },
-                onThumbnailFrame = if (mimeType.startsWith("video/") && !thumbnailCaptureStarted) {
-                    { frame ->
-                        thumbnailCaptureStarted = true
-                        scope.launch {
-                            VideoThumbnailCache.save(context, profile.id, item.path, frame)
-                        }
-                    }
-                } else {
-                    null
-                },
                 onFailure = { authenticationFailure ->
                     when (streamFailureAction(authenticationFailure, retryState.retryUsed, retryState.refreshInFlight)) {
                         StreamFailureAction.RefreshAndReprepare -> {
@@ -278,7 +267,6 @@ private fun MediaPlayerContent(
     initialPositionMs: Long,
     reprepareGeneration: Int,
     onPositionChanged: (Long) -> Unit,
-    onThumbnailFrame: ((Bitmap) -> Unit)?,
     onFailure: (Boolean) -> Unit,
 ) {
     val loadingDescription = stringResource(R.string.media_loading)
@@ -294,10 +282,6 @@ private fun MediaPlayerContent(
     var fullscreen by rememberSaveable(player) { mutableStateOf(false) }
     var controlsVisible by remember(player) { mutableStateOf(true) }
     var controlsVersion by remember(player) { mutableLongStateOf(0L) }
-    var firstFrameRendered by remember(player) { mutableStateOf(false) }
-    var thumbnailCaptured by remember(player) { mutableStateOf(false) }
-    var videoTextureView by remember(player) { mutableStateOf<TextureView?>(null) }
-    val currentOnThumbnailFrame by rememberUpdatedState(onThumbnailFrame)
     val activity = remember(context) { context.findActivity() }
     DisposableEffect(player) {
         onDispose { player.release() }
@@ -314,7 +298,6 @@ private fun MediaPlayerContent(
                     videoAspectRatio = videoSize.width * videoSize.pixelWidthHeightRatio / videoSize.height
                 }
             }
-            override fun onRenderedFirstFrame() { firstFrameRendered = true }
             override fun onPlayerError(error: PlaybackException) { onFailure(error.isAuthenticationFailure()) }
         }
         player.addListener(listener)
@@ -335,21 +318,6 @@ private fun MediaPlayerContent(
             controlsVisible = false
         }
     }
-    LaunchedEffect(player, firstFrameRendered, videoTextureView) {
-        if (!firstFrameRendered || thumbnailCaptured || currentOnThumbnailFrame == null) return@LaunchedEffect
-        delay(150)
-        videoTextureView?.bitmap?.let { frame ->
-            thumbnailCaptured = true
-            currentOnThumbnailFrame?.invoke(frame)
-        }
-    }
-    DisposableEffect(player, videoTextureView) {
-        val attachedView = videoTextureView
-        onDispose {
-            attachedView?.let(player::clearVideoTextureView)
-        }
-    }
-
     if (fullscreen) {
         DisposableEffect(activity) {
             val previousOrientation = activity?.requestedOrientation
@@ -389,20 +357,8 @@ private fun MediaPlayerContent(
                 } else {
                     Modifier.fillMaxWidth().aspectRatio(videoAspectRatio)
                 }
-                AndroidView(
-                    factory = { viewContext ->
-                        TextureView(viewContext).also { textureView ->
-                            player.setVideoTextureView(textureView)
-                            videoTextureView = textureView
-                        }
-                    },
-                    update = { textureView ->
-                        if (videoTextureView !== textureView) {
-                            videoTextureView?.let(player::clearVideoTextureView)
-                            player.setVideoTextureView(textureView)
-                            videoTextureView = textureView
-                        }
-                    },
+                PlayerSurface(
+                    player = player,
                     modifier = videoModifier,
                 )
             }

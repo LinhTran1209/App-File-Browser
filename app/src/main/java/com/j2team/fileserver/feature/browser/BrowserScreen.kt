@@ -761,7 +761,16 @@ private fun ResourceVisual(
                 AppCacheManager.recordWrite(context, cacheFile)
                 BitmapFactory.decodeFile(cacheFile.path)
             } else {
-                null
+                cacheFile.delete()
+                cacheFile.parentFile?.mkdirs()
+                sessionRepository.cachedVideoThumbnail(profile, item.path, cacheFile)
+                if (cacheFile.isFile && cacheFile.length() > 0L) {
+                    AppCacheManager.recordWrite(context, cacheFile)
+                    BitmapFactory.decodeFile(cacheFile.path)
+                } else {
+                    cacheFile.delete()
+                    null
+                }
             }
         }
     }
