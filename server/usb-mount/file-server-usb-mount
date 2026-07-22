@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+set -u
+
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CONFIG_FILE="${CONFIG_FILE:-/etc/file-server/usb-mount.conf}"
+STATE_ROOT="${STATE_ROOT:-/run/file-server-usb}"
+MEDIA_ROOT="${MEDIA_ROOT:-/media/file-server}"
+COMPAT_TARGET="${COMPAT_TARGET:-/media/usb_bitlocker}"
+KEY_DIR="${KEY_DIR:-/etc/file-server/bitlocker-keys}"
+FALLBACK_KEY="${FALLBACK_KEY:-/etc/file-server/bitlocker.key}"
+SYS_CLASS_BLOCK="${SYS_CLASS_BLOCK:-/sys/class/block}"
+DEV_ROOT="${DEV_ROOT:-/dev}"
+LOCK_FILE="${LOCK_FILE:-/run/lock/file-server-usb.lock}"
+COMPAT_UUID="${COMPAT_UUID:-}"
+RESTART_SERVICES="${RESTART_SERVICES:-1}"
+
+if [[ -r "$CONFIG_FILE" ]]; then
+    # This root-owned file contains mount policy only; secrets live in separate 0600 files.
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+fi
+
+mkdir -p "$STATE_ROOT/volumes" "$STATE_ROOT/unlock" "$MEDIA_ROOT" "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+log() { logger -t file-server-usb -- "$*" 2>/dev/null || printf '%s\n' "$*" >&2; }
+safe_name() { printf '%s' "$1" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//;s/-*$//' | cut -c1-80; }
+read_state() { [[ -r "$1/$2" ]] && cat "$1/$2" || true; }
+write_state() { printf '%s' "$3" >"$1/$2"; }
+is_mounted() { findmnt -rn -T "$1" >/dev/null 2>&1; }
+
+topology_changed=0
+declare -A devices fs_types uuids labels names
+
+discover() {
+    local entry name device parent removable sys_path fs_type uuid label stable
+    for entry in "$SYS_CLASS_BLOCK"/*; do
+        [[ -e "$entry" ]] || continue
+        name="$(basename "$entry")"
+        case "$name" in loop*|ram*|zram*|dm-*) continue ;; esac
+        device="$DEV_ROOT/$name"
+        [[ -b "$device" || "$DEV_ROOT" != "/dev" ]] || continue
+
+        parent="$name"
+        if [[ -e "$entry/partition" ]]; then
+            parent="$(lsblk -ndo PKNAME "$device" 2>/dev/null | head -n1)"
+            [[ -n "$parent" ]] || continue
+        fi
+        removable="$(cat "$SYS_CLASS_BLOCK/$parent/removable" 2>/dev/null || printf '0')"
+        sys_path="$(readlink -f "$entry" 2>/dev/null || true)"
+        [[ "$removable" == "1" || "$sys_path" == *'/usb'* ]] || continue
+
+        fs_type="$(blkid -o value -s TYPE "$device" 2>/dev/null || true)"
+        [[ -n "$fs_type" ]] || continue
+        uuid="$(blkid -o value -s UUID "$device" 2>/dev/null || true)"
+        label="$(blkid -o value -s LABEL "$device" 2>/dev/null || true)"
+        stable="$(safe_name "${uuid:-${label:-$name}}")"
+        [[ -n "$stable" ]] || stable="$name"
+
+        devices["$stable"]="$device"
+        fs_types["$stable"]="$fs_type"
+        uuids["$stable"]="$uuid"
+        labels["$stable"]="$label"
+        names["$stable"]="$name"
+    done
+}
+
+cleanup_state() {
+    local state="$1" target unlock
+    target="$(read_state "$state" target)"
+    unlock="$(read_state "$state" unlock)"
+    if [[ -n "$target" ]] && is_mounted "$target"; then
+        timeout 10 umount -l "$target" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$unlock" ]]; then
+        timeout 10 fusermount -uz "$unlock" >/dev/null 2>&1 || true
+        rm -rf -- "$unlock"
+    fi
+    rm -rf -- "$state"
+    topology_changed=1
+}
+
+mount_ordinary() {
+    local stable="$1" device="$2" fs_type="$3" uuid="$4" label="$5"
+    local display target state
+    display="$(safe_name "${label:-${uuid:-$stable}}")"
+    [[ -n "$display" ]] || display="$stable"
+    target="$MEDIA_ROOT/$display"
+    state="$STATE_ROOT/volumes/$stable"
+    mkdir -p "$target"
+    if is_mounted "$target"; then timeout 10 umount -l "$target" >/dev/null 2>&1 || true; fi
+    if ! timeout 15 mount -o rw,nosuid,nodev,noexec "$device" "$target"; then
+        log "mount failed for $device ($fs_type)"
+        return 1
+    fi
+    mkdir -p "$state"
+    write_state "$state" device "$device"
+    write_state "$state" uuid "$uuid"
+    write_state "$state" kind ordinary
+    write_state "$state" target "$target"
+    write_state "$state" unlock ''
+    topology_changed=1
+    log "mounted $device at $target"
+}
+
+mount_bitlocker() {
+    local stable="$1" device="$2" uuid="$3" label="$4"
+    local key display target state unlock i
+    key="$KEY_DIR/$uuid.key"
+    [[ -n "$uuid" && -r "$key" ]] || key="$FALLBACK_KEY"
+    if [[ ! -r "$key" ]]; then
+        log "BitLocker key missing for ${uuid:-$device}; volume skipped"
+        return 1
+    fi
+    if [[ "$(stat -c '%a' "$key" 2>/dev/null || true)" != "600" ]]; then
+        log "BitLocker key permissions must be 600 for ${uuid:-$device}; volume skipped"
+        return 1
+    fi
+
+    display="$(safe_name "${label:-${uuid:-$stable}}")"
+    [[ -n "$display" ]] || display="$stable"
+    if [[ -n "$COMPAT_UUID" && "$uuid" == "$COMPAT_UUID" ]]; then target="$COMPAT_TARGET"; else target="$MEDIA_ROOT/$display"; fi
+    state="$STATE_ROOT/volumes/$stable"
+    unlock="$STATE_ROOT/unlock/$stable"
+    mkdir -p "$target" "$unlock"
+    if is_mounted "$target"; then timeout 10 umount -l "$target" >/dev/null 2>&1 || true; fi
+    timeout 10 fusermount -uz "$unlock" >/dev/null 2>&1 || true
+
+    # -u without an inline value reads the password from stdin, keeping it out of argv and logs.
+    if ! timeout 25 dislocker -V "$device" -u -- "$unlock" <"$key" >/dev/null 2>&1; then
+        log "BitLocker unlock failed for ${uuid:-$device}"
+        return 1
+    fi
+    for i in {1..10}; do [[ -e "$unlock/dislocker-file" ]] && break; sleep 0.2; done
+    if [[ ! -e "$unlock/dislocker-file" ]] || ! timeout 15 mount -o loop,rw,nosuid,nodev,noexec "$unlock/dislocker-file" "$target"; then
+        timeout 10 fusermount -uz "$unlock" >/dev/null 2>&1 || true
+        log "decrypted filesystem mount failed for ${uuid:-$device}"
+        return 1
+    fi
+
+    mkdir -p "$state"
+    write_state "$state" device "$device"
+    write_state "$state" uuid "$uuid"
+    write_state "$state" kind bitlocker
+    write_state "$state" target "$target"
+    write_state "$state" unlock "$unlock"
+    topology_changed=1
+    log "unlocked $device at $target"
+}
+
+discover
+
+# Remove state whose device disappeared, was renamed, or now returns I/O errors.
+for state in "$STATE_ROOT/volumes"/*; do
+    [[ -d "$state" ]] || continue
+    stable="$(basename "$state")"
+    old_device="$(read_state "$state" device)"
+    target="$(read_state "$state" target)"
+    if [[ -z "${devices[$stable]+x}" || "${devices[$stable]}" != "$old_device" || ! -n "$target" ]] ||
+       ! is_mounted "$target" || ! timeout 3 ls -U "$target" >/dev/null 2>&1; then
+        cleanup_state "$state"
+    fi
+done
+
+for stable in "${!devices[@]}"; do
+    state="$STATE_ROOT/volumes/$stable"
+    if [[ -d "$state" ]]; then continue; fi
+    fs_type="${fs_types[$stable],,}"
+    case "$fs_type" in
+        bitlocker) mount_bitlocker "$stable" "${devices[$stable]}" "${uuids[$stable]}" "${labels[$stable]}" || true ;;
+        ext2|ext3|ext4|vfat|fat|exfat|ntfs|ntfs3|xfs|btrfs|f2fs|udf)
+            mount_ordinary "$stable" "${devices[$stable]}" "$fs_type" "${uuids[$stable]}" "${labels[$stable]}" || true
+            ;;
+        *) log "unsupported USB filesystem $fs_type on ${devices[$stable]}" ;;
+    esac
+done
+
+if [[ "$topology_changed" == "1" && "$RESTART_SERVICES" == "1" ]]; then
+    systemctl try-restart filebrowser.service >/dev/null 2>&1 || true
+    systemctl try-restart file-server-thumbnail.service >/dev/null 2>&1 || true
+fi
+
+exit 0

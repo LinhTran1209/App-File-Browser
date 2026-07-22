@@ -1,0 +1,13 @@
+[Unit]
+Description=Reconcile File Server USB mounts
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/file-server-usb-mount
+TimeoutStartSec=45
+KillMode=process
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateMounts=false

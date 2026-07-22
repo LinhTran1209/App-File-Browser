@@ -1,0 +1,2 @@
+ACTION=="add|remove|change", SUBSYSTEM=="block", TAG+="systemd", ENV{SYSTEMD_WANTS}+="file-server-usb-reconcile.service"
+

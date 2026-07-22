@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically recover File Server USB mounts
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=15s
+AccuracySec=2s
+Unit=file-server-usb-reconcile.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
