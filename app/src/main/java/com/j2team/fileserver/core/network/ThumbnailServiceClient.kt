@@ -48,7 +48,12 @@ class ThumbnailServiceClient {
         if (code !in 200..299) {
             ApiResult(code, error = IOException("Unable to queue video thumbnail ($code)"))
         } else {
-            connection.inputStream.use { it.copyTo(java.io.OutputStream.nullOutputStream()) }
+            connection.inputStream.use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (input.read(buffer) != -1) {
+                    // Drain the small response so HttpURLConnection can release its socket.
+                }
+            }
             ApiResult(code, Unit)
         }
     } catch (error: Throwable) {
@@ -73,4 +78,3 @@ class ThumbnailServiceClient {
         }
     }
 }
-

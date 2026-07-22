@@ -71,7 +71,7 @@ object AppCacheManager {
         val remaining = thumbnailFiles(cacheDir).sortedBy(File::lastModified).toMutableList()
         var totalBytes = remaining.sumOf(File::length)
         while (totalBytes > THUMBNAIL_MAX_BYTES && remaining.isNotEmpty()) {
-            val oldest = remaining.removeFirst()
+            val oldest = remaining.removeAt(0)
             val length = oldest.length()
             if (oldest.delete()) totalBytes -= length
         }

@@ -3,6 +3,7 @@ package com.j2team.fileserver.core.ui
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -13,7 +14,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -121,7 +121,7 @@ fun FileServerTheme(
     content: @Composable () -> Unit,
 ) {
     val colorScheme = if (darkTheme) DarkColors else LightColors
-    val activity = LocalContext.current as? ComponentActivity
+    val activity = LocalActivity.current as? ComponentActivity
     val systemBarColor = colorScheme.background.toArgb()
     SideEffect {
         activity?.enableEdgeToEdge(
