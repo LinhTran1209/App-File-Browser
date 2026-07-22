@@ -39,11 +39,15 @@ object PreviewRouter {
         return if (sample.isLikelyUtf8Text()) PreviewKind.Text else PreviewKind.Unsupported
     }
 
-    /** `.ts` defaults to TypeScript; a server-declared MPEG transport MIME overrides that ambiguous suffix. */
-    fun kind(name: String, declaredMimeType: String?): PreviewKind = when (declaredMimeType?.lowercase()) {
-        "video/mp2t" -> PreviewKind.Video
-        "text/typescript", "application/typescript" -> PreviewKind.Text
-        else -> kind(name)
+    /** Generic binary `.ts` listings are transport streams; explicit text MIME keeps TypeScript source as text. */
+    fun kind(name: String, declaredMimeType: String?): PreviewKind {
+        val mimeType = declaredMimeType?.substringBefore(';')?.trim()?.lowercase()
+        return when {
+            mimeType == "video/mp2t" -> PreviewKind.Video
+            mimeType in setOf("text/typescript", "application/typescript") -> PreviewKind.Text
+            extension(name) == "ts" && mimeType == "application/octet-stream" -> PreviewKind.Video
+            else -> kind(name)
+        }
     }
 
     fun kind(name: String, sample: ByteArray, declaredMimeType: String?): PreviewKind {

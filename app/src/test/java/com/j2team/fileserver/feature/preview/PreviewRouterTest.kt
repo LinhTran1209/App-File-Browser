@@ -46,6 +46,7 @@ class PreviewRouterTest {
     fun resolvesAmbiguousTsUsingDeclaredMimeType() {
         assertEquals(PreviewKind.Text, PreviewRouter.kind("client.ts"))
         assertEquals(PreviewKind.Video, PreviewRouter.kind("stream.ts", "video/mp2t"))
+        assertEquals(PreviewKind.Video, PreviewRouter.kind("stream.ts", "application/octet-stream"))
         assertEquals(PreviewKind.Text, PreviewRouter.kind("client.ts", "text/typescript"))
         assertEquals("text/typescript", PreviewRouter.mimeType("client.ts"))
     }
