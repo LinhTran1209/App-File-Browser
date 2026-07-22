@@ -51,16 +51,21 @@ object PreviewRouter {
     }
 
     fun kind(name: String, sample: ByteArray, declaredMimeType: String?): PreviewKind {
-        if (declaredMimeType?.lowercase() == "video/mp2t") return PreviewKind.Video
+        if (declaredMimeType?.substringBefore(';')?.trim()?.lowercase() == "video/mp2t") return PreviewKind.Video
         if (extension(name) == "ts") {
-            return when (declaredMimeType?.lowercase()) {
-                "text/typescript", "application/typescript" -> PreviewKind.Text
-                else -> if (sample.isLikelyUtf8Text()) PreviewKind.Text else PreviewKind.Video
-            }
+            if (sample.isMpegTransportStream()) return PreviewKind.Video
+            return if (sample.isLikelyUtf8Text()) PreviewKind.Text else PreviewKind.Video
         }
         if (extension(name).isEmpty()) return kind(name, sample)
         return kind(name, declaredMimeType)
     }
+
+    fun resolvedMimeType(name: String, kind: PreviewKind, declaredMimeType: String?): String =
+        if (extension(name) == "ts" && kind == PreviewKind.Video) {
+            "video/mp2t"
+        } else {
+            declaredMimeType?.substringBefore(';')?.trim()?.lowercase() ?: mimeType(name)
+        }
 
     fun mimeType(name: String): String = when (extension(name)) {
         "jpg", "jpeg" -> "image/jpeg"
@@ -129,6 +134,16 @@ object PreviewRouter {
             true
         } catch (_: CharacterCodingException) {
             false
+        }
+    }
+
+    private fun ByteArray.isMpegTransportStream(): Boolean {
+        if (size < 188 * 3) return false
+        val lastStart = minOf(187, size - (188 * 2) - 1)
+        return (0..lastStart).any { offset ->
+            this[offset] == 0x47.toByte() &&
+                this[offset + 188] == 0x47.toByte() &&
+                this[offset + (188 * 2)] == 0x47.toByte()
         }
     }
 }

@@ -67,8 +67,9 @@ internal fun PreviewScreen(
         withContext(Dispatchers.IO) { sessionRepository.previewProbe(profile, item.path) }
             .onSuccess { probe ->
                 val mimeType = PreviewRouter.preferredMimeType(item.mimeType, probe.mimeType)
-                resolvedMimeType = mimeType
-                kind = PreviewRouter.kind(item.name, probe.sample, mimeType)
+                val previewKind = PreviewRouter.kind(item.name, probe.sample, mimeType)
+                resolvedMimeType = PreviewRouter.resolvedMimeType(item.name, previewKind, mimeType)
+                kind = previewKind
             }
             .onFailure { error = it.message ?: "Unable to inspect preview" }
     }

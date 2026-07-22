@@ -174,7 +174,7 @@ class FileMutationRequestTest {
     fun createDirectoryPostsEncodedPathAndAuthHeader() = runTest {
         withServer { request ->
             assertEquals("POST", request.method)
-            assertEquals("/api/resources/Media/New%20Folder", request.path)
+            assertEquals("/api/resources/Media/New%20Folder/", request.path)
             assertEquals("token", request.authHeader)
             201 to ""
         }.let { server -> try {

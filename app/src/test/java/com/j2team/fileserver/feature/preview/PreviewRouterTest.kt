@@ -61,6 +61,37 @@ class PreviewRouterTest {
     }
 
     @Test
+    fun mpegTsSignatureWinsOverMisleadingTypescriptMime() {
+        val transportStream = ByteArray(188 * 3) { 0x80.toByte() }.apply {
+            this[0] = 0x47
+            this[188] = 0x47
+            this[376] = 0x47
+        }
+
+        assertEquals(
+            PreviewKind.Video,
+            PreviewRouter.kind("recording.ts", transportStream, "text/typescript"),
+        )
+        assertEquals(
+            "video/mp2t",
+            PreviewRouter.resolvedMimeType("recording.ts", PreviewKind.Video, "text/typescript"),
+        )
+    }
+
+    @Test
+    fun sourceTsRemainsTextWhileUnknownBinaryTsFallsBackToVideo() {
+        val source = "export const answer: number = 42\n".toByteArray()
+        val binary = byteArrayOf(0, 1, 2, 3, 4)
+
+        assertEquals(PreviewKind.Text, PreviewRouter.kind("client.ts", source, "text/typescript"))
+        assertEquals(PreviewKind.Video, PreviewRouter.kind("capture.ts", binary, "text/typescript"))
+        assertEquals(
+            "text/typescript",
+            PreviewRouter.resolvedMimeType("client.ts", PreviewKind.Text, "text/typescript"),
+        )
+    }
+
+    @Test
     fun prefersSpecificTransportMimeOverGenericProbeMime() {
         assertEquals("video/mp2t", PreviewRouter.preferredMimeType("video/mp2t", "application/octet-stream"))
         assertEquals("video/mp2t", PreviewRouter.preferredMimeType("application/octet-stream", "video/mp2t"))
