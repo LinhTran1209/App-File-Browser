@@ -47,6 +47,7 @@ class PreviewRouterTest {
         assertEquals(PreviewKind.Text, PreviewRouter.kind("client.ts"))
         assertEquals(PreviewKind.Video, PreviewRouter.kind("stream.ts", "video/mp2t"))
         assertEquals(PreviewKind.Video, PreviewRouter.kind("stream.ts", "application/octet-stream"))
+        assertEquals(PreviewKind.Video, PreviewRouter.kind("stream.ts", null as String?))
         assertEquals(PreviewKind.Text, PreviewRouter.kind("client.ts", "text/typescript"))
         assertEquals("text/typescript", PreviewRouter.mimeType("client.ts"))
     }

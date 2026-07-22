@@ -39,13 +39,13 @@ object PreviewRouter {
         return if (sample.isLikelyUtf8Text()) PreviewKind.Text else PreviewKind.Unsupported
     }
 
-    /** Generic binary `.ts` listings are transport streams; explicit text MIME keeps TypeScript source as text. */
+    /** Missing/generic MIME for `.ts` listings means transport stream; explicit text MIME keeps TypeScript as text. */
     fun kind(name: String, declaredMimeType: String?): PreviewKind {
         val mimeType = declaredMimeType?.substringBefore(';')?.trim()?.lowercase()
         return when {
             mimeType == "video/mp2t" -> PreviewKind.Video
             mimeType in setOf("text/typescript", "application/typescript") -> PreviewKind.Text
-            extension(name) == "ts" && mimeType == "application/octet-stream" -> PreviewKind.Video
+            extension(name) == "ts" && (mimeType == null || mimeType == "application/octet-stream") -> PreviewKind.Video
             else -> kind(name)
         }
     }
