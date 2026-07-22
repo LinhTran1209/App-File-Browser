@@ -69,10 +69,13 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.session.SessionRepository
 import java.io.File
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
 internal data class MediaStreamConfiguration(
@@ -183,6 +186,11 @@ internal fun mediaHttpClient(): OkHttpClient = OkHttpClient.Builder()
     .followSslRedirects(false)
     .build()
 
+internal suspend fun requestVideoThumbnailOffMain(
+    dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    request: suspend () -> Unit,
+) = withContext(dispatcher) { request() }
+
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 internal fun MediaPreview(
@@ -209,7 +217,9 @@ internal fun MediaPreview(
     }
     LaunchedEffect(profile.id, item.path, mimeType) {
         if (mimeType?.startsWith("video/") == true) {
-            sessionRepository.requestVideoThumbnail(profile, item.path)
+            requestVideoThumbnailOffMain {
+                sessionRepository.requestVideoThumbnail(profile, item.path)
+            }
         }
     }
 
