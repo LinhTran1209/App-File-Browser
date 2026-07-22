@@ -137,10 +137,11 @@ private fun FileServerApp(
         }
 
         Surface(
-            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+            Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
-            when (screen) {
+            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                when (screen) {
                 Screen.Servers -> ServersScreen(
                     profiles = profiles,
                     sessionRepository = sessionRepository,
@@ -207,6 +208,7 @@ private fun FileServerApp(
                         if (languageChanged) onLanguageChanged(updated.language)
                     },
                 )
+                }
             }
         }
     }

@@ -9,8 +9,7 @@ import java.io.File
 import java.util.UUID
 
 object AppCacheManager {
-    private const val THUMBNAIL_MAX_BYTES = 32L * 1024L * 1024L
-    private const val THUMBNAIL_MAX_FILES = 256
+    private const val THUMBNAIL_MAX_BYTES = 100L * 1024L * 1024L
     private const val THUMBNAIL_MAX_AGE_MS = 7L * 24L * 60L * 60L * 1_000L
     private const val STALE_TEMP_AGE_MS = 24L * 60L * 60L * 1_000L
     private val lock = Mutex()
@@ -71,7 +70,7 @@ object AppCacheManager {
 
         val remaining = thumbnailFiles(cacheDir).sortedBy(File::lastModified).toMutableList()
         var totalBytes = remaining.sumOf(File::length)
-        while (remaining.size > THUMBNAIL_MAX_FILES || totalBytes > THUMBNAIL_MAX_BYTES) {
+        while (totalBytes > THUMBNAIL_MAX_BYTES && remaining.isNotEmpty()) {
             val oldest = remaining.removeFirst()
             val length = oldest.length()
             if (oldest.delete()) totalBytes -= length

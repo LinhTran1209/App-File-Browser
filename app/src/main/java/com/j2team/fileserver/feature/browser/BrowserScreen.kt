@@ -12,7 +12,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -73,6 +76,7 @@ import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.feature.preview.PreviewScreen
 import com.j2team.fileserver.feature.preview.PreviewKind
 import com.j2team.fileserver.feature.preview.PreviewRouter
+import com.j2team.fileserver.feature.preview.VideoThumbnailExtractor
 import com.j2team.fileserver.R
 import com.j2team.fileserver.folderIconResource
 import com.j2team.fileserver.formatBytes
@@ -130,9 +134,14 @@ fun BrowserScreen(
     var sortAscending by remember { mutableStateOf(true) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var renameValue by remember { mutableStateOf("") }
+    var pathDialogOpen by remember { mutableStateOf(false) }
+    var pathInput by remember { mutableStateOf("") }
+    var pathResolving by remember { mutableStateOf(false) }
+    val pathScrollState = rememberScrollState()
     val transferTasks by transferStore.tasks.collectAsState()
     val unavailableDirectory = stringResource(R.string.download_directory_unavailable)
     val notPermittedMessage = stringResource(R.string.action_not_permitted)
+    val pathNotFoundMessage = stringResource(R.string.path_not_found)
     val basePath = BrowserPath.normalize(profile?.basePath ?: "/")
 
     BackHandler(enabled = preview != null) { preview = null }
@@ -161,6 +170,9 @@ fun BrowserScreen(
         }
     }
     LaunchedEffect(profile, path, settings.showHiddenFiles) { refresh() }
+    LaunchedEffect(path, pathScrollState.maxValue) {
+        pathScrollState.scrollTo(pathScrollState.maxValue)
+    }
     LaunchedEffect(moveDialogOpen, moveDestination, profile) {
         val current = profile ?: return@LaunchedEffect
         if (!moveDialogOpen) return@LaunchedEffect
@@ -228,6 +240,45 @@ fun BrowserScreen(
         }
     }
 
+    fun openEnteredPath() {
+        val current = profile ?: return
+        val target = BrowserPath.normalize(pathInput)
+        pathResolving = true
+        scope.launch {
+            if (target == "/") {
+                path = target
+                pathDialogOpen = false
+                mutationError = null
+                pathResolving = false
+                return@launch
+            }
+            val parent = BrowserPath.parent(target)
+            withContext(Dispatchers.IO) { sessionRepository.listWithPermissions(current, parent) }
+                .onSuccess { listing ->
+                    val targetItem = listing.resources.firstOrNull { item ->
+                        BrowserPath.normalize(item.path) == target ||
+                            runCatching { BrowserPath.child(parent, item.name) == target }.getOrDefault(false)
+                    }
+                    when {
+                        targetItem == null -> mutationError = pathNotFoundMessage
+                        targetItem.isDirectory -> {
+                            path = target
+                            pathDialogOpen = false
+                            mutationError = null
+                        }
+                        else -> {
+                            path = parent
+                            preview = targetItem
+                            pathDialogOpen = false
+                            mutationError = null
+                        }
+                    }
+                }
+                .onFailure { mutationError = it.message ?: pathNotFoundMessage }
+            pathResolving = false
+        }
+    }
+
     if (preview != null && profile != null) {
         val images = resources.filter { !it.isDirectory && PreviewRouter.kind(it.name, it.mimeType) == PreviewKind.Image }
         PreviewScreen(
@@ -240,6 +291,35 @@ fun BrowserScreen(
             onBack = { preview = null },
         )
         return
+    }
+
+    if (pathDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { if (!pathResolving) pathDialogOpen = false },
+            modifier = Modifier.fillMaxWidth(0.88f),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            title = { Text(stringResource(R.string.enter_path)) },
+            text = {
+                OutlinedTextField(
+                    value = pathInput,
+                    onValueChange = { pathInput = it },
+                    label = { Text(stringResource(R.string.current_path)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = ::openEnteredPath,
+                    enabled = !pathResolving && pathInput.isNotBlank(),
+                ) { Text(stringResource(R.string.go_to_path)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pathDialogOpen = false }, enabled = !pathResolving) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
+        )
     }
 
     if (createFolderOpen) {
@@ -446,7 +526,21 @@ fun BrowserScreen(
             } else {
                 Spacer(Modifier.size(48.dp))
             }
-            Text(path, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                path,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(pathScrollState)
+                    .clickable {
+                        pathInput = path
+                        pathDialogOpen = true
+                    },
+                maxLines = 1,
+                softWrap = false,
+            )
         }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
@@ -653,14 +747,29 @@ private fun ResourceVisual(
     var bitmap by remember(cacheFile) { mutableStateOf<android.graphics.Bitmap?>(null) }
     LaunchedEffect(cacheFile) {
         bitmap = withContext(Dispatchers.IO) {
-            if (!cacheFile.isFile || cacheFile.length() == 0L) {
-                cacheFile.parentFile?.mkdirs()
-                sessionRepository.thumbnail(profile, item.path, cacheFile).getOrNull()
-                AppCacheManager.recordWrite(context, cacheFile)
+            val cachedBitmap = if (cacheFile.isFile && cacheFile.length() > 0L) {
+                BitmapFactory.decodeFile(cacheFile.path)
             } else {
-                AppCacheManager.recordAccess(cacheFile)
+                null
             }
-            BitmapFactory.decodeFile(cacheFile.path)
+            if (cachedBitmap != null) {
+                AppCacheManager.recordAccess(cacheFile)
+                cachedBitmap
+            } else {
+                cacheFile.delete()
+                cacheFile.parentFile?.mkdirs()
+                when (previewKind) {
+                    PreviewKind.Video -> VideoThumbnailExtractor.extract(
+                        profile = profile,
+                        item = item,
+                        sessionRepository = sessionRepository,
+                        destination = cacheFile,
+                    )
+                    else -> sessionRepository.thumbnail(profile, item.path, cacheFile)
+                }
+                AppCacheManager.recordWrite(context, cacheFile)
+                BitmapFactory.decodeFile(cacheFile.path)
+            }
         }
     }
     val preview = bitmap

@@ -1,5 +1,8 @@
 package com.j2team.fileserver.core.ui
 
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -7,7 +10,10 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -114,8 +120,25 @@ fun FileServerTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
+    val colorScheme = if (darkTheme) DarkColors else LightColors
+    val activity = LocalContext.current as? ComponentActivity
+    val systemBarColor = colorScheme.background.toArgb()
+    SideEffect {
+        activity?.enableEdgeToEdge(
+            statusBarStyle = if (darkTheme) {
+                SystemBarStyle.dark(systemBarColor)
+            } else {
+                SystemBarStyle.light(systemBarColor, systemBarColor)
+            },
+            navigationBarStyle = if (darkTheme) {
+                SystemBarStyle.dark(systemBarColor)
+            } else {
+                SystemBarStyle.light(systemBarColor, systemBarColor)
+            },
+        )
+    }
     MaterialTheme(
-        colorScheme = if (darkTheme) DarkColors else LightColors,
+        colorScheme = colorScheme,
         typography = FileServerTypography,
         shapes = FileServerShapes,
         content = content,
