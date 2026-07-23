@@ -1,6 +1,7 @@
 package com.j2team.fileserver.core.network
 
 import com.j2team.fileserver.core.model.ServerProfile
+import com.j2team.fileserver.core.model.ServerUser
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
@@ -13,6 +14,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 import com.sun.net.httpserver.HttpServer
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicInteger
@@ -211,6 +213,46 @@ class FileMutationRequestTest {
             assertFalse(result.isSuccess)
             assertEquals(2, requests)
         } finally { server.stop(0) } }
+    }
+
+    @Test
+    fun profilePasswordUpdateUsesEncodedPasswordHeaderAndProfileOnlyFields() {
+        val passwordHeader = AtomicReference<String?>()
+        val requestBody = AtomicReference<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                passwordHeader.set(exchange.requestHeaders.getFirst("X-Password"))
+                requestBody.set(exchange.requestBody.bufferedReader().use { it.readText() })
+                exchange.sendResponseHeaders(204, -1)
+                exchange.close()
+            }
+            start()
+        }
+        try {
+            val result = FileBrowserClient().saveUserResult(
+                profile = profile(server),
+                token = "token",
+                user = ServerUser(id = 7, username = "reader", hideDotfiles = true),
+                newPassword = "new-password",
+                currentPassword = "old pass+?",
+                profileOnly = true,
+            )
+
+            assertTrue(result.error?.message, result.code in 200..299)
+            assertEquals("old%20pass%2B%3F", passwordHeader.get())
+            val body = JSONObject(requestBody.get())
+            assertFalse(body.has("current_password"))
+            val which = body.getJSONArray("which").let { array ->
+                (0 until array.length()).map(array::getString)
+            }
+            assertTrue("hideDotfiles" in which)
+            assertTrue("password" in which)
+            assertFalse("username" in which)
+            assertFalse("scope" in which)
+            assertFalse("perm" in which)
+        } finally {
+            server.stop(0)
+        }
     }
 
     private fun profile(server: HttpServer) = ServerProfile(

@@ -159,8 +159,9 @@ class SessionRepository(
         user: ServerUser,
         newPassword: String = "",
         currentPassword: String = "",
+        profileOnly: Boolean = false,
     ): Result<ServerUser> = authenticated(profile) { token ->
-        transport.saveUserResult(profile, token, user, newPassword, currentPassword)
+        transport.saveUserResult(profile, token, user, newPassword, currentPassword, profileOnly)
     }
 
     suspend fun deleteUser(profile: ServerProfile, id: Long, currentPassword: String = ""): Result<Unit> =

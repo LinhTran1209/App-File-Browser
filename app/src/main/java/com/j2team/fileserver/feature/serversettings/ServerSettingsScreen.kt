@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -19,8 +20,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
@@ -31,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -48,6 +48,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.R
 import com.j2team.fileserver.core.model.ServerGlobalSettings
@@ -76,6 +79,7 @@ fun ServerSettingsScreen(
         onBack()
         return
     }
+    BackHandler(onBack = onBack)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var currentUser by remember(currentProfile.id) { mutableStateOf<ServerUser?>(null) }
@@ -148,7 +152,13 @@ fun ServerSettingsScreen(
                         error = null
                         scope.launch {
                             withContext(Dispatchers.IO) {
-                                repository.saveUser(currentProfile, updated, newPassword, currentPassword)
+                                repository.saveUser(
+                                    profile = currentProfile,
+                                    user = updated,
+                                    newPassword = newPassword,
+                                    currentPassword = currentPassword,
+                                    profileOnly = true,
+                                )
                             }.onSuccess {
                                 currentUser = it
                                 showUpdateSuccess()
@@ -346,35 +356,81 @@ private fun UsersSettings(
 private fun UserEditorDialog(user: ServerUser, creating: Boolean, busy: Boolean, onDismiss: () -> Unit, onSave: (ServerUser, String) -> Unit) {
     var draft by remember(user) { mutableStateOf(user) }
     var password by remember { mutableStateOf("") }
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(if (creating) R.string.new_user else R.string.edit_user)) },
-        text = {
-            Column(
-                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                SettingField(stringResource(R.string.username), draft.username) { draft = draft.copy(username = it) }
-                SettingField(stringResource(R.string.scope), draft.scope) { draft = draft.copy(scope = it) }
-                if (creating) PasswordField(stringResource(R.string.password), password) { password = it }
-                ToggleRow(stringResource(R.string.administrator), draft.admin) { draft = draft.copy(admin = it) }
-                if (!draft.admin) {
-                    PermissionRow(stringResource(R.string.permission_create), draft.permissions.create) { draft = draft.copy(permissions = draft.permissions.copy(create = it)) }
-                    PermissionRow(stringResource(R.string.permission_delete), draft.permissions.delete) { draft = draft.copy(permissions = draft.permissions.copy(delete = it)) }
-                    PermissionRow(stringResource(R.string.permission_download), draft.permissions.download) { draft = draft.copy(permissions = draft.permissions.copy(download = it)) }
-                    PermissionRow(stringResource(R.string.permission_modify), draft.permissions.modify) { draft = draft.copy(permissions = draft.permissions.copy(modify = it)) }
-                    PermissionRow(stringResource(R.string.permission_rename), draft.permissions.rename) { draft = draft.copy(permissions = draft.permissions.copy(rename = it)) }
-                    PermissionRow(stringResource(R.string.permission_share), draft.permissions.share) { draft = draft.copy(permissions = draft.permissions.copy(share = it)) }
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(0.9f).heightIn(max = 620.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(
+                    stringResource(if (creating) R.string.new_user else R.string.edit_user),
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                Spacer(Modifier.height(12.dp))
+                LazyColumn(
+                    modifier = Modifier.weight(1f, fill = false),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    contentPadding = PaddingValues(bottom = 8.dp),
+                ) {
+                    item {
+                        SettingField(
+                            stringResource(R.string.username),
+                            draft.username,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { draft = draft.copy(username = it) }
+                    }
+                    item {
+                        SettingField(
+                            stringResource(R.string.scope),
+                            draft.scope,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { draft = draft.copy(scope = it) }
+                    }
+                    if (creating) {
+                        item {
+                            PasswordField(
+                                stringResource(R.string.password),
+                                password,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { password = it }
+                        }
+                    }
+                    item {
+                        ToggleRow(
+                            stringResource(R.string.administrator),
+                            draft.admin,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { draft = draft.copy(admin = it) }
+                    }
+                    if (!draft.admin) {
+                        item { PermissionRow(stringResource(R.string.permission_create), draft.permissions.create) { draft = draft.copy(permissions = draft.permissions.copy(create = it)) } }
+                        item { PermissionRow(stringResource(R.string.permission_delete), draft.permissions.delete) { draft = draft.copy(permissions = draft.permissions.copy(delete = it)) } }
+                        item { PermissionRow(stringResource(R.string.permission_download), draft.permissions.download) { draft = draft.copy(permissions = draft.permissions.copy(download = it)) } }
+                        item { PermissionRow(stringResource(R.string.permission_modify), draft.permissions.modify) { draft = draft.copy(permissions = draft.permissions.copy(modify = it)) } }
+                        item { PermissionRow(stringResource(R.string.permission_rename), draft.permissions.rename) { draft = draft.copy(permissions = draft.permissions.copy(rename = it)) } }
+                        item { PermissionRow(stringResource(R.string.permission_share), draft.permissions.share) { draft = draft.copy(permissions = draft.permissions.copy(share = it)) } }
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
+                    TextButton(
+                        onClick = { onSave(draft, password) },
+                        enabled = !busy && draft.username.isNotBlank() && (!creating || password.isNotBlank()),
+                    ) {
+                        Text(stringResource(if (creating) R.string.save else R.string.update))
+                    }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { onSave(draft, password) }, enabled = !busy && draft.username.isNotBlank() && (!creating || password.isNotBlank())) {
-                Text(stringResource(if (creating) R.string.save else R.string.update))
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
-    )
+        }
+    }
 }
 
 @Composable
@@ -386,8 +442,13 @@ private fun SectionTitle(text: String, modifier: Modifier = Modifier) =
     Text(text, style = MaterialTheme.typography.titleLarge, modifier = modifier.padding(16.dp))
 
 @Composable
-private fun ToggleRow(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun ToggleRow(
+    label: String,
+    checked: Boolean,
+    modifier: Modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+    onChecked: (Boolean) -> Unit,
+) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Text(label, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChecked)
     }
@@ -402,11 +463,20 @@ private fun PermissionRow(label: String, checked: Boolean, onChecked: (Boolean) 
 }
 
 @Composable
-private fun SettingField(label: String, value: String, onValue: (String) -> Unit) =
-    OutlinedTextField(value, onValue, label = { Text(label) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), singleLine = true)
+private fun SettingField(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+    onValue: (String) -> Unit,
+) = OutlinedTextField(value, onValue, label = { Text(label) }, modifier = modifier, singleLine = true)
 
 @Composable
-private fun PasswordField(label: String, value: String, onValue: (String) -> Unit) {
+private fun PasswordField(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+    onValue: (String) -> Unit,
+) {
     var visible by remember { mutableStateOf(false) }
     OutlinedTextField(
         value = value,
@@ -421,7 +491,7 @@ private fun PasswordField(label: String, value: String, onValue: (String) -> Uni
                 )
             }
         },
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        modifier = modifier,
         singleLine = true,
     )
 }

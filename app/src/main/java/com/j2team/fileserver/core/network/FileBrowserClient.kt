@@ -21,6 +21,7 @@ import java.io.OutputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -573,6 +574,7 @@ class FileBrowserClient {
         user: ServerUser,
         newPassword: String = "",
         currentPassword: String = "",
+        profileOnly: Boolean = false,
     ): ApiResult<ServerUser> = try {
         val creating = user.id <= 0
         val url = profile.endpoint.trimEnd('/') + "/api/users" + if (creating) "" else "/${user.id}"
@@ -580,19 +582,24 @@ class FileBrowserClient {
             if (newPassword.isNotBlank()) put("password", newPassword)
         }
         val which = JSONArray().apply {
-            put("username"); put("scope"); put("perm")
-            put("lockPassword"); put("hideDotfiles"); put("singleClick")
-            put("redirectAfterCopyMove"); put("dateFormat")
+            if (!profileOnly) {
+                put("username"); put("scope"); put("perm"); put("lockPassword")
+            }
+            put("hideDotfiles"); put("singleClick"); put("redirectAfterCopyMove"); put("dateFormat")
             if (newPassword.isNotBlank()) put("password")
         }
         val body = JSONObject()
             .put("what", "user")
             .put("which", which)
             .put("data", payloadUser)
-            .apply {
-                if (currentPassword.isNotBlank()) put("current_password", currentPassword)
-            }
-        val result = jsonRequest(profile, token, if (creating) "/api/users" else "/api/users/${user.id}", if (creating) "POST" else "PUT", body)
+        val result = jsonRequest(
+            profile = profile,
+            token = token,
+            path = if (creating) "/api/users" else "/api/users/${user.id}",
+            method = if (creating) "POST" else "PUT",
+            body = body,
+            actorPassword = currentPassword,
+        )
         if (result.code !in 200..299) ApiResult(result.code, error = result.error)
         else ApiResult(result.code, result.value?.takeIf { it.isNotBlank() }?.let { serverUserOf(JSONObject(it)) } ?: user)
     } catch (error: Throwable) {
@@ -736,10 +743,17 @@ class FileBrowserClient {
         path: String,
         method: String,
         body: JSONObject? = null,
+        actorPassword: String = "",
     ): ApiResult<String> = try {
         val connection = open(profile.endpoint.trimEnd('/') + path, method).apply {
             setRequestProperty("Accept", "application/json")
             if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            if (actorPassword.isNotBlank()) {
+                setRequestProperty(
+                    "X-Password",
+                    URLEncoder.encode(actorPassword, Charsets.UTF_8.name()).replace("+", "%20"),
+                )
+            }
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
