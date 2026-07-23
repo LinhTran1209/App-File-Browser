@@ -580,16 +580,18 @@ class FileBrowserClient {
             if (newPassword.isNotBlank()) put("password", newPassword)
         }
         val which = JSONArray().apply {
-            put("username"); put("scope"); put("locale"); put("perm")
+            put("username"); put("scope"); put("perm")
             put("lockPassword"); put("hideDotfiles"); put("singleClick")
-            put("redirectAfterCopyMove"); put("dateFormat"); put("aceEditorTheme")
+            put("redirectAfterCopyMove"); put("dateFormat")
             if (newPassword.isNotBlank()) put("password")
         }
         val body = JSONObject()
             .put("what", "user")
             .put("which", which)
-            .put("current_password", currentPassword)
             .put("data", payloadUser)
+            .apply {
+                if (currentPassword.isNotBlank()) put("current_password", currentPassword)
+            }
         val result = jsonRequest(profile, token, if (creating) "/api/users" else "/api/users/${user.id}", if (creating) "POST" else "PUT", body)
         if (result.code !in 200..299) ApiResult(result.code, error = result.error)
         else ApiResult(result.code, result.value?.takeIf { it.isNotBlank() }?.let { serverUserOf(JSONObject(it)) } ?: user)
@@ -633,9 +635,9 @@ class FileBrowserClient {
             .put("name", settings.instanceName)
             .put("files", settings.brandingDirectory))
         body.optJSONObject("tus")?.also { tus ->
-            tus.put("chunkSize", settings.chunkSize)
+            tus.put("chunkSize", settings.chunkSizeBytes)
             tus.put("retryCount", settings.retryCount)
-        } ?: body.put("tus", JSONObject().put("chunkSize", settings.chunkSize).put("retryCount", settings.retryCount))
+        } ?: body.put("tus", JSONObject().put("chunkSize", settings.chunkSizeBytes).put("retryCount", settings.retryCount))
         val result = jsonRequest(profile, token, "/api/settings", "PUT", body)
         if (result.code in 200..299) ApiResult(result.code, settings.copy(rawJson = body.toString()))
         else ApiResult(result.code, error = result.error)
@@ -722,7 +724,7 @@ class FileBrowserClient {
             theme = branding.optString("theme", "dark"),
             instanceName = branding.optString("name"),
             brandingDirectory = branding.optString("files"),
-            chunkSize = tus.optString("chunkSize", "20MB"),
+            chunkSizeBytes = tus.optLong("chunkSize", 20L * 1024L * 1024L),
             retryCount = tus.optInt("retryCount", 5),
             rawJson = item.toString(),
         )

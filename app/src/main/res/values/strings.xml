@@ -130,7 +130,7 @@
     <string name="instance_name">T&#234;n m&#225;y ch&#7911;</string>
     <string name="branding_directory">Th&#432; m&#7909;c nh&#7853;n di&#7879;n</string>
     <string name="chunked_uploads">T&#7843;i l&#234;n theo ph&#7847;n</string>
-    <string name="chunk_size">K&#237;ch th&#432;&#7899;c m&#7895;i ph&#7847;n</string>
+    <string name="chunk_size">K&#237;ch th&#432;&#7899;c m&#7895;i ph&#7847;n (MB)</string>
     <string name="retry_count">S&#7889; l&#7847;n th&#7917; l&#7841;i</string>
     <string name="users">Ng&#432;&#7901;i d&#249;ng</string>
     <string name="new_user">Ng&#432;&#7901;i d&#249;ng m&#7899;i</string>
@@ -145,4 +145,6 @@
     <string name="permission_rename">&#272;&#7893;i t&#234;n ho&#7863;c di chuy&#7875;n</string>
     <string name="permission_share">Chia s&#7867; t&#7879;p</string>
     <string name="save">L&#432;u</string>
+    <string name="update">C&#7853;p nh&#7853;t</string>
+    <string name="update_success">C&#7853;p nh&#7853;t th&#224;nh c&#244;ng!</string>
 </resources>

@@ -130,7 +130,7 @@
     <string name="instance_name">Instance name</string>
     <string name="branding_directory">Branding directory</string>
     <string name="chunked_uploads">Chunked uploads</string>
-    <string name="chunk_size">Chunk size</string>
+    <string name="chunk_size">Chunk size (MB)</string>
     <string name="retry_count">Retry count</string>
     <string name="users">Users</string>
     <string name="new_user">New user</string>
@@ -145,4 +145,6 @@
     <string name="permission_rename">Rename or move files and directories</string>
     <string name="permission_share">Share files</string>
     <string name="save">Save</string>
+    <string name="update">Update</string>
+    <string name="update_success">Updated successfully!</string>
 </resources>

@@ -49,7 +49,17 @@ data class ServerGlobalSettings(
     val theme: String = "dark",
     val instanceName: String = "",
     val brandingDirectory: String = "",
-    val chunkSize: String = "20MB",
+    val chunkSizeBytes: Long = 20L * 1024L * 1024L,
     val retryCount: Int = 5,
     val rawJson: String = "{}",
 )
+
+private const val BYTES_PER_MEGABYTE = 1024L * 1024L
+
+fun bytesToMegabytes(bytes: Long): String =
+    (bytes.coerceAtLeast(BYTES_PER_MEGABYTE) / BYTES_PER_MEGABYTE).toString()
+
+fun megabytesToBytes(value: String): Long? {
+    val megabytes = value.trim().toLongOrNull()?.takeIf { it > 0 } ?: return null
+    return runCatching { Math.multiplyExact(megabytes, BYTES_PER_MEGABYTE) }.getOrNull()
+}

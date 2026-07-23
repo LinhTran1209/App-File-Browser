@@ -2,6 +2,7 @@ package com.j2team.fileserver.core.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -55,5 +56,18 @@ class ServerAdminPolicyTest {
             listOf(ServerSettingsSection.Profile, ServerSettingsSection.Shares),
             user.visibleSettingsSections(),
         )
+    }
+
+    @Test
+    fun chunkSizeIsDisplayedAndSubmittedInMegabytes() {
+        assertEquals("20", bytesToMegabytes(20L * 1024L * 1024L))
+        assertEquals(20L * 1024L * 1024L, megabytesToBytes("20"))
+    }
+
+    @Test
+    fun invalidChunkSizeIsRejected() {
+        assertNull(megabytesToBytes(""))
+        assertNull(megabytesToBytes("0"))
+        assertNull(megabytesToBytes("20MB"))
     }
 }

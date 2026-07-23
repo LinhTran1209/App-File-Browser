@@ -3,6 +3,8 @@ package com.j2team.fileserver.feature.serversettings
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.widget.Toast
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,12 +19,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -38,8 +43,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.R
@@ -49,8 +56,11 @@ import com.j2team.fileserver.core.model.ServerSettingsSection
 import com.j2team.fileserver.core.model.ServerUser
 import com.j2team.fileserver.core.model.ServerUserPermissions
 import com.j2team.fileserver.core.model.ShareLink
+import com.j2team.fileserver.core.model.bytesToMegabytes
+import com.j2team.fileserver.core.model.megabytesToBytes
 import com.j2team.fileserver.core.model.visibleSettingsSections
 import com.j2team.fileserver.core.session.SessionRepository
+import com.j2team.fileserver.core.ui.AppIcons
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -76,6 +86,9 @@ fun ServerSettingsScreen(
     var shares by remember { mutableStateOf<List<ShareLink>>(emptyList()) }
     var global by remember { mutableStateOf(ServerGlobalSettings()) }
     var users by remember { mutableStateOf<List<ServerUser>>(emptyList()) }
+    val showUpdateSuccess = {
+        Toast.makeText(context, context.getString(R.string.update_success), Toast.LENGTH_SHORT).show()
+    }
 
     fun reload() {
         loading = true
@@ -132,10 +145,14 @@ fun ServerSettingsScreen(
                     busy = busy,
                     onSave = { updated, newPassword, currentPassword ->
                         busy = true
+                        error = null
                         scope.launch {
                             withContext(Dispatchers.IO) {
                                 repository.saveUser(currentProfile, updated, newPassword, currentPassword)
-                            }.onSuccess { currentUser = it }
+                            }.onSuccess {
+                                currentUser = it
+                                showUpdateSuccess()
+                            }
                                 .onFailure { error = it.message ?: it.toString() }
                             busy = false
                         }
@@ -163,9 +180,13 @@ fun ServerSettingsScreen(
                 busy = busy,
                 onSave = { updated ->
                     busy = true
+                    error = null
                     scope.launch {
                         withContext(Dispatchers.IO) { repository.updateServerSettings(currentProfile, updated) }
-                            .onSuccess { global = it }
+                            .onSuccess {
+                                global = it
+                                showUpdateSuccess()
+                            }
                             .onFailure { error = it.message ?: it.toString() }
                         busy = false
                     }
@@ -176,10 +197,12 @@ fun ServerSettingsScreen(
                 busy = busy,
                 onSave = { updated, password ->
                     busy = true
+                    error = null
                     scope.launch {
                         withContext(Dispatchers.IO) { repository.saveUser(currentProfile, updated, password) }
                             .onSuccess { saved ->
                                 users = (users.filterNot { it.id == saved.id } + saved).sortedBy { it.username.lowercase() }
+                                showUpdateSuccess()
                             }.onFailure { error = it.message ?: it.toString() }
                         busy = false
                     }
@@ -214,8 +237,6 @@ private fun ProfileSettings(
         item { ToggleRow(stringResource(R.string.single_click), draft.singleClick) { draft = draft.copy(singleClick = it) } }
         item { ToggleRow(stringResource(R.string.redirect_after_move), draft.redirectAfterCopyMove) { draft = draft.copy(redirectAfterCopyMove = it) } }
         item { ToggleRow(stringResource(R.string.exact_date_format), draft.dateFormat) { draft = draft.copy(dateFormat = it) } }
-        item { SettingField(stringResource(R.string.language), draft.locale) { draft = draft.copy(locale = it) } }
-        item { SettingField(stringResource(R.string.editor_theme), draft.aceEditorTheme) { draft = draft.copy(aceEditorTheme = it) } }
         if (!draft.lockPassword) {
             item { SectionTitle(stringResource(R.string.change_password)) }
             item { PasswordField(stringResource(R.string.new_password), newPassword) { newPassword = it } }
@@ -224,7 +245,8 @@ private fun ProfileSettings(
         }
         item {
             SaveButton(
-                enabled = !busy && (newPassword.isBlank() || newPassword == confirmPassword),
+                enabled = !busy &&
+                    (newPassword.isBlank() || (newPassword == confirmPassword && currentPassword.isNotBlank())),
                 onClick = { onSave(draft, newPassword, currentPassword) },
             )
         }
@@ -254,6 +276,8 @@ private fun ShareManagement(shares: List<ShareLink>, onCopy: (ShareLink) -> Unit
 @Composable
 private fun GlobalSettings(settings: ServerGlobalSettings, busy: Boolean, onSave: (ServerGlobalSettings) -> Unit) {
     var draft by remember(settings) { mutableStateOf(settings) }
+    var chunkSizeMb by remember(settings.chunkSizeBytes) { mutableStateOf(bytesToMegabytes(settings.chunkSizeBytes)) }
+    val validChunkSize = megabytesToBytes(chunkSizeMb)
     SettingsList {
         item { SectionTitle(stringResource(R.string.global_settings)) }
         item { ToggleRow(stringResource(R.string.allow_signup), draft.signup) { draft = draft.copy(signup = it) } }
@@ -264,13 +288,17 @@ private fun GlobalSettings(settings: ServerGlobalSettings, busy: Boolean, onSave
         item { SectionTitle(stringResource(R.string.branding)) }
         item { ToggleRow(stringResource(R.string.disable_external_links), draft.disableExternalLinks) { draft = draft.copy(disableExternalLinks = it) } }
         item { ToggleRow(stringResource(R.string.disable_disk_graph), draft.disableUsedPercentage) { draft = draft.copy(disableUsedPercentage = it) } }
-        item { SettingField(stringResource(R.string.theme), draft.theme) { draft = draft.copy(theme = it) } }
         item { SettingField(stringResource(R.string.instance_name), draft.instanceName) { draft = draft.copy(instanceName = it) } }
         item { SettingField(stringResource(R.string.branding_directory), draft.brandingDirectory) { draft = draft.copy(brandingDirectory = it) } }
         item { SectionTitle(stringResource(R.string.chunked_uploads)) }
-        item { SettingField(stringResource(R.string.chunk_size), draft.chunkSize) { draft = draft.copy(chunkSize = it) } }
+        item {
+            SettingField(stringResource(R.string.chunk_size), chunkSizeMb) { value ->
+                chunkSizeMb = value
+                megabytesToBytes(value)?.let { draft = draft.copy(chunkSizeBytes = it) }
+            }
+        }
         item { IntField(stringResource(R.string.retry_count), draft.retryCount) { draft = draft.copy(retryCount = it) } }
-        item { SaveButton(!busy) { onSave(draft) } }
+        item { SaveButton(!busy && validChunkSize != null) { onSave(draft.copy(chunkSizeBytes = validChunkSize!!)) } }
     }
 }
 
@@ -322,7 +350,10 @@ private fun UserEditorDialog(user: ServerUser, creating: Boolean, busy: Boolean,
         onDismissRequest = onDismiss,
         title = { Text(stringResource(if (creating) R.string.new_user else R.string.edit_user)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 SettingField(stringResource(R.string.username), draft.username) { draft = draft.copy(username = it) }
                 SettingField(stringResource(R.string.scope), draft.scope) { draft = draft.copy(scope = it) }
                 if (creating) PasswordField(stringResource(R.string.password), password) { password = it }
@@ -339,7 +370,7 @@ private fun UserEditorDialog(user: ServerUser, creating: Boolean, busy: Boolean,
         },
         confirmButton = {
             TextButton(onClick = { onSave(draft, password) }, enabled = !busy && draft.username.isNotBlank() && (!creating || password.isNotBlank())) {
-                Text(stringResource(R.string.save))
+                Text(stringResource(if (creating) R.string.save else R.string.update))
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
@@ -375,8 +406,25 @@ private fun SettingField(label: String, value: String, onValue: (String) -> Unit
     OutlinedTextField(value, onValue, label = { Text(label) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), singleLine = true)
 
 @Composable
-private fun PasswordField(label: String, value: String, onValue: (String) -> Unit) =
-    OutlinedTextField(value, onValue, label = { Text(label) }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), singleLine = true)
+private fun PasswordField(label: String, value: String, onValue: (String) -> Unit) {
+    var visible by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValue,
+        label = { Text(label) },
+        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = { visible = !visible }) {
+                Icon(
+                    painterResource(if (visible) AppIcons.VisibilityOff else AppIcons.Visibility),
+                    contentDescription = stringResource(if (visible) R.string.hide_password else R.string.show_password),
+                )
+            }
+        },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        singleLine = true,
+    )
+}
 
 @Composable
 private fun IntField(label: String, value: Int, onValue: (Int) -> Unit) =
@@ -384,7 +432,7 @@ private fun IntField(label: String, value: Int, onValue: (Int) -> Unit) =
 
 @Composable
 private fun SaveButton(enabled: Boolean, onClick: () -> Unit) =
-    Button(onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().padding(16.dp).height(52.dp)) { Text(stringResource(R.string.save)) }
+    Button(onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().padding(16.dp).height(52.dp)) { Text(stringResource(R.string.update)) }
 
 private fun ServerSettingsSection.labelResource(): Int = when (this) {
     ServerSettingsSection.Profile -> R.string.profile
