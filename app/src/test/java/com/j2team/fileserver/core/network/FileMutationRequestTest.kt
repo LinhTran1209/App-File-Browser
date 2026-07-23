@@ -255,6 +255,26 @@ class FileMutationRequestTest {
         }
     }
 
+    @Test
+    fun profileUpdateAcceptsNumericSuccessResponse() {
+        val server = withServer { Pair(200, "200") }
+        try {
+            val user = ServerUser(id = 7, username = "reader", hideDotfiles = true)
+            val result = FileBrowserClient().saveUserResult(
+                profile = profile(server),
+                token = "token",
+                user = user,
+                profileOnly = true,
+            )
+
+            assertEquals(200, result.code)
+            assertEquals(user, result.value)
+            assertEquals(null, result.error)
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun profile(server: HttpServer) = ServerProfile(
         id = "test",
         displayName = "Test",

@@ -600,8 +600,15 @@ class FileBrowserClient {
             body = body,
             actorPassword = currentPassword,
         )
-        if (result.code !in 200..299) ApiResult(result.code, error = result.error)
-        else ApiResult(result.code, result.value?.takeIf { it.isNotBlank() }?.let { serverUserOf(JSONObject(it)) } ?: user)
+        if (result.code !in 200..299) {
+            ApiResult(result.code, error = result.error)
+        } else {
+            val responseUser = result.value
+                ?.trim()
+                ?.takeIf { it.startsWith("{") }
+                ?.let { serverUserOf(JSONObject(it)) }
+            ApiResult(result.code, responseUser ?: user)
+        }
     } catch (error: Throwable) {
         ApiResult(-1, error = error)
     }

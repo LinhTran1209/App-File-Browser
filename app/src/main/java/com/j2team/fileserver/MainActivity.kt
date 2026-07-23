@@ -342,13 +342,13 @@ private fun ServerCard(profile: ServerProfile, sessionRepository: SessionReposit
                 DropdownMenu(
                     expanded = menu,
                     onDismissRequest = { menu = false },
-                    modifier = Modifier.width(132.dp),
+                    modifier = Modifier.width(104.dp),
                 ) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.delete), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
                         onClick = { menu = false; onDelete() },
-                        modifier = Modifier.height(48.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        modifier = Modifier.height(40.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp),
                     )
                 }
             }
@@ -390,6 +390,11 @@ private fun AddServerScreen(onBack: () -> Unit, onSave: (String, String) -> Unit
     }
 }
 
+internal fun isInvalidCredentialsError(error: Throwable): Boolean =
+    error.message.orEmpty().let { message ->
+        message.contains("(401)") || message.contains("(403)")
+    }
+
 @Composable
 internal fun LoginScreen(
     profile: ServerProfile?,
@@ -403,6 +408,7 @@ internal fun LoginScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val invalidCredentialsMessage = stringResource(R.string.invalid_credentials)
     Column(Modifier.fillMaxSize()) {
         AppBar(stringResource(R.string.sign_in), onBack)
         Column(
@@ -432,7 +438,13 @@ internal fun LoginScreen(
                             sessionRepository.login(current, username, password.toCharArray())
                         }
                         busy = false
-                        result.onSuccess { onConnected() }.onFailure { error = it.message }
+                        result.onSuccess { onConnected() }.onFailure {
+                            error = if (isInvalidCredentialsError(it)) {
+                                invalidCredentialsMessage
+                            } else {
+                                it.message
+                            }
+                        }
                     }
                 },
                 enabled = !busy && username.isNotBlank() && password.isNotBlank(),

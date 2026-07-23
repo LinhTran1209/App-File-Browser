@@ -10,6 +10,7 @@
     <string name="username">Tên đăng nhập</string>
     <string name="password">Mật khẩu</string>
     <string name="connecting">Đang kết nối…</string>
+    <string name="invalid_credentials">Tài khoản hoặc mật khẩu không đúng!</string>
     <string name="online">Trực tuyến</string>
     <string name="offline">Ngoại tuyến</string>
     <string name="folder">Thư mục</string>

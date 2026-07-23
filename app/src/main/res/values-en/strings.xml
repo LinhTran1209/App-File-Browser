@@ -10,6 +10,7 @@
     <string name="username">Username</string>
     <string name="password">Password</string>
     <string name="connecting">Connecting…</string>
+    <string name="invalid_credentials">Incorrect username or password!</string>
     <string name="online">Online</string>
     <string name="offline">Offline</string>
     <string name="folder">Folder</string>
