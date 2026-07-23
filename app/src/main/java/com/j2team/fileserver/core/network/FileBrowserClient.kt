@@ -7,6 +7,9 @@ import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.model.DiskUsage
 import com.j2team.fileserver.core.model.ShareDurationUnit
 import com.j2team.fileserver.core.model.ShareLink
+import com.j2team.fileserver.core.model.ServerGlobalSettings
+import com.j2team.fileserver.core.model.ServerUser
+import com.j2team.fileserver.core.model.ServerUserPermissions
 import com.j2team.fileserver.core.session.ApiResult
 import org.json.JSONArray
 import org.json.JSONObject
@@ -535,12 +538,218 @@ class FileBrowserClient {
         )
     }
 
+    fun currentUserResult(profile: ServerProfile, token: String?): ApiResult<ServerUser> {
+        val userId = currentUserId(token)
+            ?: return ApiResult(-1, error = IOException("Unable to identify the authenticated user"))
+        return userResult(profile, token, userId)
+    }
+
+    fun usersResult(profile: ServerProfile, token: String?): ApiResult<List<ServerUser>> = try {
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/users", "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load users", code, connection)))
+        val array = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+        ApiResult(code, buildList {
+            for (index in 0 until array.length()) add(serverUserOf(array.getJSONObject(index)))
+        })
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun userResult(profile: ServerProfile, token: String?, id: Long): ApiResult<ServerUser> = try {
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/users/$id", "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load user", code, connection)))
+        ApiResult(code, serverUserOf(JSONObject(connection.inputStream.bufferedReader().use { it.readText() })))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun saveUserResult(
+        profile: ServerProfile,
+        token: String?,
+        user: ServerUser,
+        newPassword: String = "",
+        currentPassword: String = "",
+    ): ApiResult<ServerUser> = try {
+        val creating = user.id <= 0
+        val url = profile.endpoint.trimEnd('/') + "/api/users" + if (creating) "" else "/${user.id}"
+        val payloadUser = serverUserJson(user).apply {
+            if (newPassword.isNotBlank()) put("password", newPassword)
+        }
+        val which = JSONArray().apply {
+            put("username"); put("scope"); put("locale"); put("perm")
+            put("lockPassword"); put("hideDotfiles"); put("singleClick")
+            put("redirectAfterCopyMove"); put("dateFormat"); put("aceEditorTheme")
+            if (newPassword.isNotBlank()) put("password")
+        }
+        val body = JSONObject()
+            .put("what", "user")
+            .put("which", which)
+            .put("current_password", currentPassword)
+            .put("data", payloadUser)
+        val result = jsonRequest(profile, token, if (creating) "/api/users" else "/api/users/${user.id}", if (creating) "POST" else "PUT", body)
+        if (result.code !in 200..299) ApiResult(result.code, error = result.error)
+        else ApiResult(result.code, result.value?.takeIf { it.isNotBlank() }?.let { serverUserOf(JSONObject(it)) } ?: user)
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun deleteUserResult(profile: ServerProfile, token: String?, id: Long, currentPassword: String): ApiResult<Unit> {
+        val result = jsonRequest(
+            profile, token, "/api/users/$id", "DELETE",
+            JSONObject().put("current_password", currentPassword),
+        )
+        return if (result.code in 200..299) ApiResult(result.code, Unit) else ApiResult(result.code, error = result.error)
+    }
+
+    fun settingsResult(profile: ServerProfile, token: String?): ApiResult<ServerGlobalSettings> = try {
+        val result = jsonRequest(profile, token, "/api/settings", "GET")
+        if (result.code !in 200..299) return ApiResult(result.code, error = result.error)
+        ApiResult(result.code, globalSettingsOf(JSONObject(result.value ?: "{}")))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun updateSettingsResult(profile: ServerProfile, token: String?, settings: ServerGlobalSettings): ApiResult<ServerGlobalSettings> = try {
+        val body = JSONObject(settings.rawJson.ifBlank { "{}" })
+        body.put("signup", settings.signup)
+        body.put("createUserDir", settings.createUserDir)
+        body.put("hideLoginButton", settings.hideLoginButton)
+        body.put("userHomeBasePath", settings.userHomeBasePath)
+        body.put("minimumPasswordLength", settings.minimumPasswordLength)
+        body.optJSONObject("branding")?.also { branding ->
+            branding.put("disableExternal", settings.disableExternalLinks)
+            branding.put("disableUsedPercentage", settings.disableUsedPercentage)
+            branding.put("theme", settings.theme)
+            branding.put("name", settings.instanceName)
+            branding.put("files", settings.brandingDirectory)
+        } ?: body.put("branding", JSONObject()
+            .put("disableExternal", settings.disableExternalLinks)
+            .put("disableUsedPercentage", settings.disableUsedPercentage)
+            .put("theme", settings.theme)
+            .put("name", settings.instanceName)
+            .put("files", settings.brandingDirectory))
+        body.optJSONObject("tus")?.also { tus ->
+            tus.put("chunkSize", settings.chunkSize)
+            tus.put("retryCount", settings.retryCount)
+        } ?: body.put("tus", JSONObject().put("chunkSize", settings.chunkSize).put("retryCount", settings.retryCount))
+        val result = jsonRequest(profile, token, "/api/settings", "PUT", body)
+        if (result.code in 200..299) ApiResult(result.code, settings.copy(rawJson = body.toString()))
+        else ApiResult(result.code, error = result.error)
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun allSharesResult(profile: ServerProfile, token: String?): ApiResult<List<ShareLink>> = try {
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/shares", "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load shares", code, connection)))
+        val array = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+        ApiResult(code, buildList { for (index in 0 until array.length()) add(shareLinkOf(array.getJSONObject(index))) })
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
     private fun shareLinkOf(item: JSONObject): ShareLink = ShareLink(
         hash = item.optString("hash"),
         path = item.optString("path"),
         expire = item.optLong("expire"),
         hasPassword = item.optBoolean("hasPassword"),
+        userId = item.optLong("userID", item.optLong("userId")),
+        username = item.optString("username"),
     )
+
+    private fun serverUserOf(item: JSONObject): ServerUser {
+        val perm = item.optJSONObject("perm") ?: JSONObject()
+        return ServerUser(
+            id = item.optLong("id"),
+            username = item.optString("username"),
+            scope = item.optString("scope", "/"),
+            locale = item.optString("locale", "en"),
+            admin = perm.optBoolean("admin", item.optBoolean("admin")),
+            lockPassword = item.optBoolean("lockPassword"),
+            hideDotfiles = item.optBoolean("hideDotfiles"),
+            singleClick = item.optBoolean("singleClick"),
+            redirectAfterCopyMove = item.optBoolean("redirectAfterCopyMove"),
+            dateFormat = item.optBoolean("dateFormat"),
+            aceEditorTheme = item.optString("aceEditorTheme"),
+            permissions = ServerUserPermissions(
+                create = perm.optBoolean("create"),
+                delete = perm.optBoolean("delete"),
+                download = perm.optBoolean("download"),
+                modify = perm.optBoolean("modify"),
+                rename = perm.optBoolean("rename"),
+                share = perm.optBoolean("share"),
+            ),
+        )
+    }
+
+    private fun serverUserJson(user: ServerUser): JSONObject = JSONObject()
+        .put("id", user.id)
+        .put("username", user.username)
+        .put("scope", user.scope)
+        .put("locale", user.locale)
+        .put("lockPassword", user.lockPassword)
+        .put("hideDotfiles", user.hideDotfiles)
+        .put("singleClick", user.singleClick)
+        .put("redirectAfterCopyMove", user.redirectAfterCopyMove)
+        .put("dateFormat", user.dateFormat)
+        .put("aceEditorTheme", user.aceEditorTheme)
+        .put("perm", JSONObject()
+            .put("admin", user.admin)
+            .put("create", user.permissions.create)
+            .put("delete", user.permissions.delete)
+            .put("download", user.permissions.download)
+            .put("modify", user.permissions.modify)
+            .put("rename", user.permissions.rename)
+            .put("share", user.permissions.share))
+
+    private fun globalSettingsOf(item: JSONObject): ServerGlobalSettings {
+        val branding = item.optJSONObject("branding") ?: JSONObject()
+        val tus = item.optJSONObject("tus") ?: JSONObject()
+        return ServerGlobalSettings(
+            signup = item.optBoolean("signup"),
+            createUserDir = item.optBoolean("createUserDir"),
+            hideLoginButton = item.optBoolean("hideLoginButton"),
+            userHomeBasePath = item.optString("userHomeBasePath", "/users"),
+            minimumPasswordLength = item.optInt("minimumPasswordLength", 3),
+            disableExternalLinks = branding.optBoolean("disableExternal"),
+            disableUsedPercentage = branding.optBoolean("disableUsedPercentage"),
+            theme = branding.optString("theme", "dark"),
+            instanceName = branding.optString("name"),
+            brandingDirectory = branding.optString("files"),
+            chunkSize = tus.optString("chunkSize", "20MB"),
+            retryCount = tus.optInt("retryCount", 5),
+            rawJson = item.toString(),
+        )
+    }
+
+    private fun jsonRequest(
+        profile: ServerProfile,
+        token: String?,
+        path: String,
+        method: String,
+        body: JSONObject? = null,
+    ): ApiResult<String> = try {
+        val connection = open(profile.endpoint.trimEnd('/') + path, method).apply {
+            setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+        }
+        if (body != null) connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = connection.responseCode
+        if (code !in 200..299) ApiResult(code, error = IOException(requestError("Request failed", code, connection)))
+        else ApiResult(code, connection.inputStream.bufferedReader().use { it.readText() })
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
 
     private fun directoryOf(item: JSONObject): Boolean {
         val type = item.optString("type").lowercase()

@@ -31,9 +31,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -114,9 +116,12 @@ fun BrowserScreen(
     sessionRepository: SessionRepository,
     onBack: () -> Unit,
     onTransfers: () -> Unit,
+    onServerSettings: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
     var path by remember(profile) { mutableStateOf(profile?.basePath ?: "/") }
     var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var directoryPermissions by remember { mutableStateOf(ResourcePermissions()) }
@@ -562,6 +567,9 @@ fun BrowserScreen(
                         Icon(painterResource(AppIcons.Transfers), stringResource(R.string.transfers), modifier = Modifier.size(28.dp))
                     }
                 }
+                IconButton(onClick = onServerSettings, modifier = Modifier.size(48.dp)) {
+                    Icon(painterResource(AppIcons.Settings), stringResource(R.string.server_settings), modifier = Modifier.size(28.dp))
+                }
             })
         } else {
             AppBar(selected.size.toString(), onBack = { selectedPaths = emptySet() }, action = {
@@ -634,6 +642,9 @@ fun BrowserScreen(
                     onClick = {
                         sortAscending = !sortAscending
                         resources = resources.sortedByResourceName(sortAscending)
+                        scope.launch {
+                            if (settings.gridView) gridState.scrollToItem(0) else listState.scrollToItem(0)
+                        }
                     },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 ) {
@@ -670,6 +681,7 @@ fun BrowserScreen(
             if (settings.gridView) {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
+                    state = gridState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -680,7 +692,7 @@ fun BrowserScreen(
                     }
                 }
             } else {
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(resources, key = { it.path }) { item ->
                         ResourceRow(
                             item = item,
@@ -706,6 +718,15 @@ private fun List<RemoteResource>.sortedByResourceName(ascending: Boolean): List<
         left.name.compareTo(right.name, ignoreCase = true) * if (ascending) 1 else -1
     }
 }
+
+internal data class SortRequest(
+    val ascending: Boolean,
+    val generation: Long,
+    val targetIndex: Int = 0,
+)
+
+internal fun nextSortRequest(current: SortRequest): SortRequest =
+    SortRequest(ascending = !current.ascending, generation = current.generation + 1)
 
 @Composable
 private fun DiskUsageSummary(usage: DiskUsage?, modifier: Modifier = Modifier) {

@@ -7,6 +7,8 @@ import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.model.DiskUsage
 import com.j2team.fileserver.core.model.ShareDurationUnit
 import com.j2team.fileserver.core.model.ShareLink
+import com.j2team.fileserver.core.model.ServerGlobalSettings
+import com.j2team.fileserver.core.model.ServerUser
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.network.PreviewProbe
 import com.j2team.fileserver.core.network.ThumbnailServiceClient
@@ -145,6 +147,33 @@ class SessionRepository(
 
     suspend fun shares(profile: ServerProfile, path: String): Result<List<ShareLink>> =
         authenticated(profile) { token -> transport.sharesResult(profile, token, path) }
+
+    suspend fun currentUser(profile: ServerProfile): Result<ServerUser> =
+        authenticated(profile) { token -> transport.currentUserResult(profile, token) }
+
+    suspend fun users(profile: ServerProfile): Result<List<ServerUser>> =
+        authenticated(profile) { token -> transport.usersResult(profile, token) }
+
+    suspend fun saveUser(
+        profile: ServerProfile,
+        user: ServerUser,
+        newPassword: String = "",
+        currentPassword: String = "",
+    ): Result<ServerUser> = authenticated(profile) { token ->
+        transport.saveUserResult(profile, token, user, newPassword, currentPassword)
+    }
+
+    suspend fun deleteUser(profile: ServerProfile, id: Long, currentPassword: String = ""): Result<Unit> =
+        authenticated(profile) { token -> transport.deleteUserResult(profile, token, id, currentPassword) }
+
+    suspend fun serverSettings(profile: ServerProfile): Result<ServerGlobalSettings> =
+        authenticated(profile) { token -> transport.settingsResult(profile, token) }
+
+    suspend fun updateServerSettings(profile: ServerProfile, settings: ServerGlobalSettings): Result<ServerGlobalSettings> =
+        authenticated(profile) { token -> transport.updateSettingsResult(profile, token, settings) }
+
+    suspend fun allShares(profile: ServerProfile): Result<List<ShareLink>> =
+        authenticated(profile) { token -> transport.allSharesResult(profile, token) }
 
     suspend fun createShare(
         profile: ServerProfile,

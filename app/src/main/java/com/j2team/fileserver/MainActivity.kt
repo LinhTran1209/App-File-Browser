@@ -59,6 +59,7 @@ import com.j2team.fileserver.feature.settings.AppLanguage
 import com.j2team.fileserver.feature.settings.FolderIconSet
 import com.j2team.fileserver.feature.settings.SettingsScreen
 import com.j2team.fileserver.feature.settings.SettingsStore
+import com.j2team.fileserver.feature.serversettings.ServerSettingsScreen
 import com.j2team.fileserver.feature.transfers.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -107,7 +108,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Servers, AddServer, Login, Browser, Transfers, Settings }
+private enum class Screen { Servers, AddServer, Login, Browser, Transfers, Settings, ServerSettings }
 
 @Composable
 private fun FileServerApp(
@@ -195,8 +196,14 @@ private fun FileServerApp(
                     sessionRepository = sessionRepository,
                     onBack = { screenName = Screen.Servers.name },
                     onTransfers = { screenName = Screen.Transfers.name },
+                    onServerSettings = { screenName = Screen.ServerSettings.name },
                 )
                 Screen.Transfers -> TransfersScreen(transferStore, transferCoordinator) { screenName = Screen.Browser.name }
+                Screen.ServerSettings -> ServerSettingsScreen(
+                    profile = selected,
+                    repository = sessionRepository,
+                    onBack = { screenName = Screen.Browser.name },
+                )
                 Screen.Settings -> SettingsScreen(
                     settings = settings,
                     onBack = { screenName = Screen.Servers.name },
@@ -332,10 +339,16 @@ private fun ServerCard(profile: ServerProfile, sessionRepository: SessionReposit
                 TextButton(onClick = { menu = true }, modifier = Modifier.size(52.dp), contentPadding = PaddingValues(0.dp)) {
                     Text("⋮", style = MaterialTheme.typography.headlineMedium)
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenu(
+                    expanded = menu,
+                    onDismissRequest = { menu = false },
+                    modifier = Modifier.width(132.dp),
+                ) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.delete), modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
                         onClick = { menu = false; onDelete() },
+                        modifier = Modifier.height(48.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
                     )
                 }
             }

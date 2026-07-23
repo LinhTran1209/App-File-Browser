@@ -10,6 +10,8 @@ data class ShareLink(
     val path: String,
     val expire: Long,
     val hasPassword: Boolean,
+    val userId: Long = 0,
+    val username: String = "",
 )
 
 enum class ShareDurationUnit(val apiValue: String) {
