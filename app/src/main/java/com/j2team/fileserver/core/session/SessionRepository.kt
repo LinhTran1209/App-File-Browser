@@ -4,6 +4,9 @@ import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.model.ResourcePermissions
+import com.j2team.fileserver.core.model.DiskUsage
+import com.j2team.fileserver.core.model.ShareDurationUnit
+import com.j2team.fileserver.core.model.ShareLink
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.network.PreviewProbe
 import com.j2team.fileserver.core.network.ThumbnailServiceClient
@@ -136,6 +139,32 @@ class SessionRepository(
         authenticated(profile) { token ->
             thumbnailTransport.cachedThumbnailResult(profile, token, remotePath, destination)
         }
+
+    suspend fun diskUsage(profile: ServerProfile, path: String): Result<DiskUsage> =
+        authenticated(profile) { token -> transport.diskUsageResult(profile, token, path) }
+
+    suspend fun shares(profile: ServerProfile, path: String): Result<List<ShareLink>> =
+        authenticated(profile) { token -> transport.sharesResult(profile, token, path) }
+
+    suspend fun createShare(
+        profile: ServerProfile,
+        path: String,
+        duration: Int,
+        unit: ShareDurationUnit,
+        password: String,
+    ): Result<ShareLink> = mutationToken(profile).fold(
+        onSuccess = { token -> transport.createShareResult(profile, token, path, duration, unit, password).toResult() },
+        onFailure = { error -> Result.failure(error) },
+    )
+
+    suspend fun deleteShare(profile: ServerProfile, hash: String): Result<Unit> =
+        mutationToken(profile).fold(
+            onSuccess = { token -> transport.deleteShareResult(profile, token, hash).toResult() },
+            onFailure = { error -> Result.failure(error) },
+        )
+
+    fun shareUrl(profile: ServerProfile, hash: String): String =
+        profile.endpoint.trimEnd('/') + "/share/" + hash
 
     suspend fun requestVideoThumbnail(profile: ServerProfile, remotePath: String): Result<Unit> =
         authenticated(profile) { token ->

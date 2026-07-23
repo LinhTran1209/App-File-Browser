@@ -7,6 +7,7 @@ data class SelectionActions(
     val canMove: Boolean,
     val canDelete: Boolean,
     val canRename: Boolean,
+    val canShare: Boolean,
 )
 
 /** Contextual actions are safe only when every selected resource permits them. */
@@ -16,5 +17,8 @@ object SelectionPolicy {
         canMove = resources.isNotEmpty() && resources.all { it.permissions.canRename },
         canDelete = resources.isNotEmpty() && resources.all { it.permissions.canDelete },
         canRename = resources.size == 1 && resources.single().permissions.canRename,
+        canShare = resources.size == 1 &&
+            resources.single().permissions.canDownload &&
+            resources.single().permissions.canShare,
     )
 }

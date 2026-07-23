@@ -22,7 +22,6 @@
     <string name="theme_system">System</string>
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
-    <string name="show_hidden">Show hidden files</string>
     <string name="open_transfers">Open transfers</string>
     <string name="download">Download</string>
     <string name="upload">Upload</string>
@@ -86,4 +85,21 @@
     <string name="current_path">Path</string>
     <string name="go_to_path">Open</string>
     <string name="path_not_found">Path not found.</string>
+    <string name="share">Share</string>
+    <string name="share_item">Share %1$s</string>
+    <string name="share_duration">Share duration</string>
+    <string name="seconds">Seconds</string>
+    <string name="minutes">Minutes</string>
+    <string name="hours">Hours</string>
+    <string name="days">Days</string>
+    <string name="optional_password">Optional password</string>
+    <string name="existing_shares">Existing links</string>
+    <string name="copy_link">Copy link</string>
+    <string name="create_share">Create link</string>
+    <string name="close">Close</string>
+    <string name="never_expires">Never expires</string>
+    <string name="expires_at">Expires: %1$s</string>
+    <string name="share_link">Share link</string>
+    <string name="disk_usage">%1$s of %2$s used</string>
+    <string name="disk_usage_unavailable">Disk usage unavailable</string>
 </resources>

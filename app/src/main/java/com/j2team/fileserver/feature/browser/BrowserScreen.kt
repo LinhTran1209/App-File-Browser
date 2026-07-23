@@ -1,6 +1,8 @@
 package com.j2team.fileserver.feature.browser
 
 import android.content.ContentResolver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -45,7 +47,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -80,10 +81,12 @@ import com.j2team.fileserver.R
 import com.j2team.fileserver.folderIconResource
 import com.j2team.fileserver.formatBytes
 import com.j2team.fileserver.core.model.RemoteResource
+import com.j2team.fileserver.core.model.DiskUsage
 import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.AppIcons
+import com.j2team.fileserver.core.ui.DialogOutlinedTextField
 import com.j2team.fileserver.feature.settings.AppSettings
 import com.j2team.fileserver.feature.transfers.TransferDirection
 import com.j2team.fileserver.feature.transfers.TransferState
@@ -96,6 +99,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
+import kotlin.math.ln
+import kotlin.math.pow
 import com.j2team.fileserver.core.cache.AppCacheManager
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -136,6 +142,12 @@ fun BrowserScreen(
     var pathDialogOpen by remember { mutableStateOf(false) }
     var pathInput by remember { mutableStateOf("") }
     var pathResolving by remember { mutableStateOf(false) }
+    var diskUsage by remember { mutableStateOf<DiskUsage?>(null) }
+    var shareDialogOpen by remember { mutableStateOf(false) }
+    var shareLinks by remember { mutableStateOf(emptyList<com.j2team.fileserver.core.model.ShareLink>()) }
+    var shareLoading by remember { mutableStateOf(false) }
+    var shareMutating by remember { mutableStateOf(false) }
+    var shareError by remember { mutableStateOf<String?>(null) }
     val pathScrollState = rememberScrollState()
     val transferTasks by transferStore.tasks.collectAsState()
     val unavailableDirectory = stringResource(R.string.download_directory_unavailable)
@@ -159,16 +171,19 @@ fun BrowserScreen(
             withContext(Dispatchers.IO) { sessionRepository.listWithPermissions(current, path) }
                 .onSuccess { listing ->
                     directoryPermissions = listing.directoryPermissions
-                    resources = listing.resources.filter { settings.showHiddenFiles || !it.name.startsWith(".") }
+                    resources = listing.resources.filterNot { it.name.startsWith(".") }
                         .sortedByResourceName(sortAscending)
                     selectedPaths = selectedPaths.intersect(resources.mapTo(mutableSetOf()) { it.path })
                     listError = null
                 }
                 .onFailure { listError = it.message ?: it.toString() }
+            withContext(Dispatchers.IO) { sessionRepository.diskUsage(current, path) }
+                .onSuccess { diskUsage = it }
+                .onFailure { diskUsage = null }
             loading = false
         }
     }
-    LaunchedEffect(profile, path, settings.showHiddenFiles) { refresh() }
+    LaunchedEffect(profile, path) { refresh() }
     LaunchedEffect(path, pathScrollState.maxValue) {
         pathScrollState.scrollTo(pathScrollState.maxValue)
     }
@@ -278,6 +293,19 @@ fun BrowserScreen(
         }
     }
 
+    fun openShareDialog(item: RemoteResource) {
+        val current = profile ?: return
+        shareDialogOpen = true
+        shareLoading = true
+        shareError = null
+        scope.launch {
+            withContext(Dispatchers.IO) { sessionRepository.shares(current, item.path) }
+                .onSuccess { shareLinks = it }
+                .onFailure { shareError = it.message ?: it.toString() }
+            shareLoading = false
+        }
+    }
+
     if (preview != null && profile != null) {
         val images = resources.filter { !it.isDirectory && PreviewRouter.kind(it.name, it.mimeType) == PreviewKind.Image }
         PreviewScreen(
@@ -299,12 +327,10 @@ fun BrowserScreen(
             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
             title = { Text(stringResource(R.string.enter_path)) },
             text = {
-                OutlinedTextField(
+                DialogOutlinedTextField(
                     value = pathInput,
                     onValueChange = { pathInput = it },
-                    label = { Text(stringResource(R.string.current_path)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    label = stringResource(R.string.current_path),
                 )
             },
             confirmButton = {
@@ -327,7 +353,7 @@ fun BrowserScreen(
             modifier = Modifier.fillMaxWidth(0.82f),
             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
             title = { Text(stringResource(R.string.new_folder)) },
-            text = { OutlinedTextField(folderName, { folderName = it }, label = { Text(stringResource(R.string.folder_name)) }, singleLine = true) },
+            text = { DialogOutlinedTextField(folderName, { folderName = it }, stringResource(R.string.folder_name)) },
             confirmButton = {
                 TextButton(
                     enabled = !mutating && folderName.isNotBlank() && directoryPermissions.canCreate,
@@ -400,12 +426,10 @@ fun BrowserScreen(
             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
             title = { Text(stringResource(R.string.rename_item)) },
             text = {
-                OutlinedTextField(
+                DialogOutlinedTextField(
                     value = renameValue,
                     onValueChange = { renameValue = it },
-                    label = { Text(stringResource(R.string.new_name)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    label = stringResource(R.string.new_name),
                 )
             },
             confirmButton = {
@@ -483,6 +507,51 @@ fun BrowserScreen(
         )
     }
 
+    if (shareDialogOpen) {
+        val item = selected.singleOrNull()
+        if (item != null) {
+            ShareDialog(
+                resourceName = item.name,
+                shares = shareLinks,
+                loading = shareLoading,
+                mutating = shareMutating,
+                error = shareError,
+                onDismiss = { if (!shareMutating) shareDialogOpen = false },
+                onCreate = { duration, unit, password ->
+                    val current = profile ?: return@ShareDialog
+                    shareMutating = true
+                    shareError = null
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            sessionRepository.createShare(current, item.path, duration, unit, password)
+                        }.onSuccess { created ->
+                            shareLinks = shareLinks.filterNot { it.hash == created.hash } + created
+                        }.onFailure { shareError = it.message ?: it.toString() }
+                        shareMutating = false
+                    }
+                },
+                onCopy = { share ->
+                    val current = profile ?: return@ShareDialog
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.share_link), sessionRepository.shareUrl(current, share.hash)))
+                },
+                onDelete = { share ->
+                    val current = profile ?: return@ShareDialog
+                    shareMutating = true
+                    shareError = null
+                    scope.launch {
+                        withContext(Dispatchers.IO) { sessionRepository.deleteShare(current, share.hash) }
+                            .onSuccess { shareLinks = shareLinks.filterNot { it.hash == share.hash } }
+                            .onFailure { shareError = it.message ?: it.toString() }
+                        shareMutating = false
+                    }
+                },
+            )
+        } else {
+            shareDialogOpen = false
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         if (selected.isEmpty()) {
             AppBar(profile?.displayName ?: stringResource(R.string.app_name), onBack = {
@@ -495,7 +564,7 @@ fun BrowserScreen(
                 }
             })
         } else {
-            AppBar(stringResource(R.string.selected_count, selected.size), onBack = { selectedPaths = emptySet() }, action = {
+            AppBar(selected.size.toString(), onBack = { selectedPaths = emptySet() }, action = {
                 if (actions.canRename) IconButton(onClick = {
                     renameValue = selected.single().name
                     renameDialogOpen = true
@@ -504,6 +573,9 @@ fun BrowserScreen(
                 }
                 if (actions.canDownload) IconButton(onClick = { selected.forEach(::download) }, modifier = Modifier.size(48.dp)) {
                     Icon(painterResource(AppIcons.Download), stringResource(R.string.download))
+                }
+                if (actions.canShare) IconButton(onClick = { openShareDialog(selected.single()) }, modifier = Modifier.size(48.dp)) {
+                    Icon(painterResource(AppIcons.Share), stringResource(R.string.share))
                 }
                 if (actions.canMove) IconButton(onClick = { moveDestination = "/"; moveDialogOpen = true }, modifier = Modifier.size(48.dp)) {
                     Icon(painterResource(AppIcons.Move), stringResource(R.string.move))
@@ -556,7 +628,7 @@ fun BrowserScreen(
             }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(if (settings.gridView) R.string.grid else R.string.list), fontWeight = FontWeight.Medium)
+            DiskUsageSummary(diskUsage, Modifier.weight(1f))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(
                     onClick = {
@@ -633,6 +705,39 @@ private fun List<RemoteResource>.sortedByResourceName(ascending: Boolean): List<
     } else {
         left.name.compareTo(right.name, ignoreCase = true) * if (ascending) 1 else -1
     }
+}
+
+@Composable
+private fun DiskUsageSummary(usage: DiskUsage?, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        if (usage == null || usage.total <= 0L) {
+            Text(
+                stringResource(R.string.disk_usage_unavailable),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                stringResource(R.string.disk_usage, formatBinaryBytes(usage.used), formatBinaryBytes(usage.total)),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(
+                progress = { (usage.used.toDouble() / usage.total.toDouble()).coerceIn(0.0, 1.0).toFloat() },
+                modifier = Modifier.fillMaxWidth(0.72f),
+            )
+        }
+    }
+}
+
+internal fun formatBinaryBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val units = arrayOf("KiB", "MiB", "GiB", "TiB")
+    val unitIndex = (ln(bytes.toDouble()) / ln(1024.0)).toInt().coerceIn(1, units.size) - 1
+    val value = bytes / 1024.0.pow(unitIndex + 1)
+    return String.format(Locale.getDefault(), "%.2f %s", value, units[unitIndex])
 }
 
 private fun String.isValidResourceName(): Boolean {

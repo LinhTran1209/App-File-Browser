@@ -88,7 +88,6 @@ internal fun SettingsScreen(
             FilterChip(!settings.gridView, { onChanged(settings.copy(gridView = false)) }, { Text(stringResource(R.string.list)) }, leadingIcon = { Icon(painterResource(AppIcons.List), null) })
             FilterChip(settings.gridView, { onChanged(settings.copy(gridView = true)) }, { Text(stringResource(R.string.grid)) }, leadingIcon = { Icon(painterResource(AppIcons.Grid), null) })
         }
-        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { Text(stringResource(R.string.show_hidden), modifier = Modifier.weight(1f)); Switch(settings.showHiddenFiles, { onChanged(settings.copy(showHiddenFiles = it)) }) }
         Button(onClick = onTransfers, modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp), shape = MaterialTheme.shapes.large) { Icon(painterResource(AppIcons.Transfers), null); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.open_transfers)) }
         }
     }

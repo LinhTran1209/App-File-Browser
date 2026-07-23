@@ -16,8 +16,8 @@ android {
         applicationId = "com.j2team.fileserver"
         minSdk = 26
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.3.1"
+        versionCode = 6
+        versionName = "1.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

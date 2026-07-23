@@ -33,7 +33,6 @@ class SettingsCodecTest {
             sortOrder = SortOrder.Modified,
             ascending = false,
             gridView = true,
-            showHiddenFiles = true,
         )
 
         assertEquals(legacy, resolvePersistedSettings("{not json", legacy))

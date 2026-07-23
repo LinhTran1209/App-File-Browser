@@ -14,7 +14,6 @@ data class AppSettings(
     val sortOrder: SortOrder = SortOrder.Name,
     val ascending: Boolean = true,
     val gridView: Boolean = false,
-    val showHiddenFiles: Boolean = false,
     val language: AppLanguage = AppLanguage.Vietnamese,
     val downloadTreeUri: String? = null,
     val folderIconSet: FolderIconSet = FolderIconSet.Classic,
@@ -28,7 +27,6 @@ class SettingsStore(context: Context) {
             sortOrder = enumValue(prefs.getString("sort", SortOrder.Name.name), SortOrder.Name),
             ascending = prefs.getBoolean("ascending", true),
             gridView = prefs.getBoolean("grid", false),
-            showHiddenFiles = prefs.getBoolean("hidden", false),
         )
         return resolvePersistedSettings(prefs.getString(SETTINGS_JSON, null), legacy)
     }
@@ -52,8 +50,6 @@ fun AppSettings.toPersistedJson(): String = buildString {
     append(',')
     append("\"gridView\":").append(gridView)
     append(',')
-    append("\"showHiddenFiles\":").append(showHiddenFiles)
-    append(',')
     appendJsonString("language", language.name)
     append(',')
     append("\"downloadTreeUri\":")
@@ -68,7 +64,6 @@ fun decodeSettings(json: String): AppSettings = AppSettings(
     sortOrder = enumValue(json.jsonString("sortOrder"), SortOrder.Name),
     ascending = json.jsonBoolean("ascending", true),
     gridView = json.jsonBoolean("gridView", false),
-    showHiddenFiles = json.jsonBoolean("showHiddenFiles", false),
     language = enumValue(json.jsonString("language"), AppLanguage.Vietnamese),
     downloadTreeUri = json.jsonString("downloadTreeUri"),
     folderIconSet = enumValue(json.jsonString("folderIconSet"), FolderIconSet.Classic),
@@ -86,8 +81,7 @@ private fun isCompleteSettingsJson(json: String): Boolean =
             value.jsonString("theme") != null &&
             value.jsonString("sortOrder") != null &&
             value.jsonBooleanOrNull("ascending") != null &&
-            value.jsonBooleanOrNull("gridView") != null &&
-            value.jsonBooleanOrNull("showHiddenFiles") != null
+            value.jsonBooleanOrNull("gridView") != null
     }
 
 private inline fun <reified T : Enum<T>> enumValue(value: String?, default: T): T =

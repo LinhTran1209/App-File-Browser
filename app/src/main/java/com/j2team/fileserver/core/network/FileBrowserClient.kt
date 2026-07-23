@@ -4,6 +4,9 @@ import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ResourcePermissions
 import com.j2team.fileserver.core.model.ResourceListing
 import com.j2team.fileserver.core.model.ServerProfile
+import com.j2team.fileserver.core.model.DiskUsage
+import com.j2team.fileserver.core.model.ShareDurationUnit
+import com.j2team.fileserver.core.model.ShareLink
 import com.j2team.fileserver.core.session.ApiResult
 import org.json.JSONArray
 import org.json.JSONObject
@@ -349,6 +352,71 @@ class FileBrowserClient {
     fun listResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<List<RemoteResource>> =
         listWithPermissionsResult(profile, token, path).map { it.resources }
 
+    fun diskUsageResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<DiskUsage> = try {
+        val connection = open(apiUrl(profile, "/api/usage", path), "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load disk usage", code, connection)))
+        val body = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        ApiResult(code, DiskUsage(total = body.optLong("total").coerceAtLeast(0L), used = body.optLong("used").coerceAtLeast(0L)))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun sharesResult(profile: ServerProfile, token: String? = null, path: String): ApiResult<List<ShareLink>> = try {
+        val connection = open(apiUrl(profile, "/api/share", path), "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load shares", code, connection)))
+        val array = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+        ApiResult(code, buildList {
+            for (index in 0 until array.length()) add(shareLinkOf(array.getJSONObject(index)))
+        })
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun createShareResult(
+        profile: ServerProfile,
+        token: String? = null,
+        path: String,
+        duration: Int,
+        unit: ShareDurationUnit,
+        password: String,
+    ): ApiResult<ShareLink> = try {
+        require(duration > 0) { "Share duration must be positive" }
+        val connection = open(apiUrl(profile, "/api/share", path), "POST").apply {
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
+            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+        }
+        val payload = JSONObject()
+            .put("password", password)
+            .put("expires", duration.toString())
+            .put("unit", unit.apiValue)
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        connection.outputStream.use { it.write(payload) }
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to create share", code, connection)))
+        val body = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        ApiResult(code, shareLinkOf(body))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun deleteShareResult(profile: ServerProfile, token: String? = null, hash: String): ApiResult<Unit> = try {
+        require(hash.isNotBlank()) { "Share hash is required" }
+        val connection = open(apiUrl(profile, "/api/share", "/$hash"), "DELETE")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) ApiResult(code, error = IOException(requestError("Unable to delete share", code, connection)))
+        else ApiResult(code, Unit)
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
     /** Reads File Browser v2's authenticated self-user record: `{"perm":{"download", "create", "delete"}}`. */
     fun currentPermissionsResult(profile: ServerProfile, token: String?): ApiResult<ResourcePermissions> = try {
         val userId = currentUserId(token) ?: return ApiResult(-1, error = IOException("Unable to identify the authenticated user"))
@@ -365,6 +433,7 @@ class FileBrowserClient {
             canCreate = permissionEnabled(permissions, "create"),
             canDelete = permissionEnabled(permissions, "delete"),
             canRename = permissionEnabled(permissions, "rename"),
+            canShare = permissionEnabled(permissions, "share"),
         ))
     } catch (error: Throwable) {
         ApiResult(-1, error = error)
@@ -462,8 +531,16 @@ class FileBrowserClient {
             canCreate = allowed("canCreate", inherited.canCreate),
             canDelete = allowed("canDelete", inherited.canDelete),
             canRename = allowed("canRename", inherited.canRename),
+            canShare = allowed("canShare", inherited.canShare),
         )
     }
+
+    private fun shareLinkOf(item: JSONObject): ShareLink = ShareLink(
+        hash = item.optString("hash"),
+        path = item.optString("path"),
+        expire = item.optLong("expire"),
+        hasPassword = item.optBoolean("hasPassword"),
+    )
 
     private fun directoryOf(item: JSONObject): Boolean {
         val type = item.optString("type").lowercase()

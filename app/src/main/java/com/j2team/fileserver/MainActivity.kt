@@ -456,13 +456,13 @@ private fun LegacyBrowserScreen(
             val result = withContext(Dispatchers.IO) { sessionRepository.list(current, path) }
             loading = false
             result.onSuccess { list ->
-                resources = list.filter { settings.showHiddenFiles || !it.name.startsWith(".") }
+                resources = list.filterNot { it.name.startsWith(".") }
                     .sortedWith(compareByDescending<RemoteResource> { it.isDirectory }.thenBy { it.name.lowercase() })
                 error = null
             }.onFailure { error = it.message }
         }
     }
-    LaunchedEffect(profile, path, settings.showHiddenFiles) { refresh() }
+    LaunchedEffect(profile, path) { refresh() }
 
     val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null && profile != null) {
@@ -617,10 +617,6 @@ private fun LegacySettingsScreen(
                     label = { Text(when (theme) { AppTheme.System -> stringResource(R.string.theme_system); AppTheme.Light -> stringResource(R.string.theme_light); AppTheme.Dark -> stringResource(R.string.theme_dark) }) },
                 )
             }
-        }
-        Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.show_hidden), modifier = Modifier.weight(1f))
-            Switch(settings.showHiddenFiles, { onChanged(settings.copy(showHiddenFiles = it)) })
         }
         Button(onClick = onTransfers, modifier = Modifier.fillMaxWidth().padding(16.dp).height(56.dp), shape = RoundedCornerShape(18.dp)) {
             Text(stringResource(R.string.open_transfers))
