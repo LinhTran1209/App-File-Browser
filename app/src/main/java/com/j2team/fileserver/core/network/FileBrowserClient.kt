@@ -578,15 +578,25 @@ class FileBrowserClient {
     ): ApiResult<ServerUser> = try {
         val creating = user.id <= 0
         val url = profile.endpoint.trimEnd('/') + "/api/users" + if (creating) "" else "/${user.id}"
-        val payloadUser = serverUserJson(user).apply {
-            if (newPassword.isNotBlank()) put("password", newPassword)
-        }
         val which = JSONArray().apply {
             if (!profileOnly) {
                 put("username"); put("scope"); put("perm"); put("lockPassword")
             }
             put("hideDotfiles"); put("singleClick"); put("redirectAfterCopyMove"); put("dateFormat")
             if (newPassword.isNotBlank()) put("password")
+        }
+        val completeUser = serverUserJson(user).apply {
+            if (newPassword.isNotBlank()) put("password", newPassword)
+        }
+        val payloadUser = if (creating) {
+            completeUser
+        } else {
+            JSONObject().apply {
+                for (index in 0 until which.length()) {
+                    val field = which.getString(index)
+                    put(field, completeUser.get(field))
+                }
+            }
         }
         val body = JSONObject()
             .put("what", "user")

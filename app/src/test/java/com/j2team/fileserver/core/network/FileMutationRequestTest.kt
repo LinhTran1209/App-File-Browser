@@ -250,6 +250,16 @@ class FileMutationRequestTest {
             assertFalse("username" in which)
             assertFalse("scope" in which)
             assertFalse("perm" in which)
+            val data = body.getJSONObject("data")
+            assertEquals(
+                setOf("hideDotfiles", "singleClick", "redirectAfterCopyMove", "dateFormat", "password"),
+                data.keys().asSequence().toSet(),
+            )
+            assertEquals("new-password", data.getString("password"))
+            assertFalse(data.has("id"))
+            assertFalse(data.has("username"))
+            assertFalse(data.has("scope"))
+            assertFalse(data.has("perm"))
         } finally {
             server.stop(0)
         }

@@ -160,8 +160,20 @@ class SessionRepository(
         newPassword: String = "",
         currentPassword: String = "",
         profileOnly: Boolean = false,
-    ): Result<ServerUser> = authenticated(profile) { token ->
-        transport.saveUserResult(profile, token, user, newPassword, currentPassword, profileOnly)
+    ): Result<ServerUser> {
+        val result = authenticated(profile) { token ->
+            transport.saveUserResult(profile, token, user, newPassword, currentPassword, profileOnly)
+        }
+        if (result.isSuccess && profileOnly && newPassword.isNotBlank()) {
+            val existing = secretStore.get(profile.id)
+            try {
+                val username = existing?.username?.takeIf { it.isNotBlank() } ?: user.username
+                secretStore.put(profile.id, StoredCredential(username, newPassword.toCharArray()))
+            } finally {
+                existing?.password?.fill('\u0000')
+            }
+        }
+        return result
     }
 
     suspend fun deleteUser(profile: ServerProfile, id: Long, currentPassword: String = ""): Result<Unit> =

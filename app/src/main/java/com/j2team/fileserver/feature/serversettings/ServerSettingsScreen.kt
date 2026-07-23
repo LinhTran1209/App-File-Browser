@@ -3,8 +3,8 @@ package com.j2team.fileserver.feature.serversettings
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -65,6 +65,7 @@ import com.j2team.fileserver.core.model.visibleSettingsSections
 import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.AppIcons
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -90,9 +91,8 @@ fun ServerSettingsScreen(
     var shares by remember { mutableStateOf<List<ShareLink>>(emptyList()) }
     var global by remember { mutableStateOf(ServerGlobalSettings()) }
     var users by remember { mutableStateOf<List<ServerUser>>(emptyList()) }
-    val showUpdateSuccess = {
-        Toast.makeText(context, context.getString(R.string.update_success), Toast.LENGTH_SHORT).show()
-    }
+    var updateSucceeded by remember { mutableStateOf(false) }
+    val showUpdateSuccess = { updateSucceeded = true }
 
     fun reload() {
         loading = true
@@ -117,116 +117,146 @@ fun ServerSettingsScreen(
     }
 
     LaunchedEffect(currentProfile.id) { reload() }
+    LaunchedEffect(updateSucceeded) {
+        if (updateSucceeded) {
+            delay(2_500)
+            updateSucceeded = false
+        }
+    }
 
-    Column(Modifier.fillMaxSize()) {
-        AppBar(stringResource(R.string.server_settings), onBack)
-        if (loading) {
-            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                CircularProgressIndicator()
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            AppBar(stringResource(R.string.server_settings), onBack)
+            if (loading) {
+                Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    CircularProgressIndicator()
+                }
+                return@Column
             }
-            return@Column
-        }
-        error?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
-        }
-        val visible = currentUser?.visibleSettingsSections().orEmpty()
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            visible.forEach { choice ->
-                FilterChip(
-                    selected = section == choice,
-                    onClick = { section = choice },
-                    label = { Text(stringResource(choice.labelResource())) },
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+            }
+            val visible = currentUser?.visibleSettingsSections().orEmpty()
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                visible.forEach { choice ->
+                    FilterChip(
+                        selected = section == choice,
+                        onClick = { section = choice },
+                        label = { Text(stringResource(choice.labelResource())) },
+                    )
+                }
+            }
+            when (section) {
+                ServerSettingsSection.Profile -> currentUser?.let { user ->
+                    ProfileSettings(
+                        user = user,
+                        busy = busy,
+                        onSave = { updated, newPassword, currentPassword ->
+                            busy = true
+                            error = null
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    repository.saveUser(
+                                        profile = currentProfile,
+                                        user = updated,
+                                        newPassword = newPassword,
+                                        currentPassword = currentPassword,
+                                        profileOnly = true,
+                                    )
+                                }.onSuccess {
+                                    currentUser = it
+                                    showUpdateSuccess()
+                                }
+                                    .onFailure { error = it.message ?: it.toString() }
+                                busy = false
+                            }
+                        },
+                    )
+                }
+                ServerSettingsSection.Shares -> ShareManagement(
+                    shares = shares,
+                    onCopy = { share ->
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Share link", repository.shareUrl(currentProfile, share.hash)))
+                    },
+                    onDelete = { share ->
+                        busy = true
+                        scope.launch {
+                            withContext(Dispatchers.IO) { repository.deleteShare(currentProfile, share.hash) }
+                                .onSuccess { shares = shares.filterNot { it.hash == share.hash } }
+                                .onFailure { error = it.message ?: it.toString() }
+                            busy = false
+                        }
+                    },
                 )
-            }
-        }
-        when (section) {
-            ServerSettingsSection.Profile -> currentUser?.let { user ->
-                ProfileSettings(
-                    user = user,
+                ServerSettingsSection.Global -> GlobalSettings(
+                    settings = global,
                     busy = busy,
-                    onSave = { updated, newPassword, currentPassword ->
+                    onSave = { updated ->
                         busy = true
                         error = null
                         scope.launch {
-                            withContext(Dispatchers.IO) {
-                                repository.saveUser(
-                                    profile = currentProfile,
-                                    user = updated,
-                                    newPassword = newPassword,
-                                    currentPassword = currentPassword,
-                                    profileOnly = true,
-                                )
-                            }.onSuccess {
-                                currentUser = it
-                                showUpdateSuccess()
-                            }
+                            withContext(Dispatchers.IO) { repository.updateServerSettings(currentProfile, updated) }
+                                .onSuccess {
+                                    global = it
+                                    showUpdateSuccess()
+                                }
+                                .onFailure { error = it.message ?: it.toString() }
+                            busy = false
+                        }
+                    },
+                )
+                ServerSettingsSection.Users -> UsersSettings(
+                    users = users,
+                    busy = busy,
+                    onSave = { updated, password ->
+                        busy = true
+                        error = null
+                        scope.launch {
+                            withContext(Dispatchers.IO) { repository.saveUser(currentProfile, updated, password) }
+                                .onSuccess { saved ->
+                                    users = (users.filterNot { it.id == saved.id } + saved).sortedBy { it.username.lowercase() }
+                                    showUpdateSuccess()
+                                }.onFailure { error = it.message ?: it.toString() }
+                            busy = false
+                        }
+                    },
+                    onDelete = { user ->
+                        busy = true
+                        scope.launch {
+                            withContext(Dispatchers.IO) { repository.deleteUser(currentProfile, user.id) }
+                                .onSuccess { users = users.filterNot { it.id == user.id } }
                                 .onFailure { error = it.message ?: it.toString() }
                             busy = false
                         }
                     },
                 )
             }
-            ServerSettingsSection.Shares -> ShareManagement(
-                shares = shares,
-                onCopy = { share ->
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Share link", repository.shareUrl(currentProfile, share.hash)))
-                },
-                onDelete = { share ->
-                    busy = true
-                    scope.launch {
-                        withContext(Dispatchers.IO) { repository.deleteShare(currentProfile, share.hash) }
-                            .onSuccess { shares = shares.filterNot { it.hash == share.hash } }
-                            .onFailure { error = it.message ?: it.toString() }
-                        busy = false
-                    }
-                },
-            )
-            ServerSettingsSection.Global -> GlobalSettings(
-                settings = global,
-                busy = busy,
-                onSave = { updated ->
-                    busy = true
-                    error = null
-                    scope.launch {
-                        withContext(Dispatchers.IO) { repository.updateServerSettings(currentProfile, updated) }
-                            .onSuccess {
-                                global = it
-                                showUpdateSuccess()
-                            }
-                            .onFailure { error = it.message ?: it.toString() }
-                        busy = false
-                    }
-                },
-            )
-            ServerSettingsSection.Users -> UsersSettings(
-                users = users,
-                busy = busy,
-                onSave = { updated, password ->
-                    busy = true
-                    error = null
-                    scope.launch {
-                        withContext(Dispatchers.IO) { repository.saveUser(currentProfile, updated, password) }
-                            .onSuccess { saved ->
-                                users = (users.filterNot { it.id == saved.id } + saved).sortedBy { it.username.lowercase() }
-                                showUpdateSuccess()
-                            }.onFailure { error = it.message ?: it.toString() }
-                        busy = false
-                    }
-                },
-                onDelete = { user ->
-                    busy = true
-                    scope.launch {
-                        withContext(Dispatchers.IO) { repository.deleteUser(currentProfile, user.id) }
-                            .onSuccess { users = users.filterNot { it.id == user.id } }
-                            .onFailure { error = it.message ?: it.toString() }
-                        busy = false
-                    }
-                },
-            )
+        }
+        if (updateSucceeded) {
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                shadowElevation = 6.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_launcher_foreground),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.width(28.dp).height(28.dp),
+                    )
+                    Text(stringResource(R.string.update_success))
+                }
+            }
         }
     }
 }
