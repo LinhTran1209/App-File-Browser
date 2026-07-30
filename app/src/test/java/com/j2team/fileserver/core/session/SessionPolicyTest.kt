@@ -5,7 +5,9 @@ import com.j2team.fileserver.core.model.ServerUser
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -94,6 +96,85 @@ class SessionPolicyTest {
             } finally {
                 stored.password.fill('\u0000')
             }
+        } finally {
+            server.stop(0)
+            secrets.clearAll()
+        }
+    }
+
+    @Test
+    fun managedUserUpdateUsesStoredLoginPasswordWhenCurrentPasswordIsOmitted() = runTest {
+        val requestBody = AtomicReference("")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                requestBody.set(exchange.requestBody.bufferedReader().use { it.readText() })
+                exchange.sendResponseHeaders(204, -1)
+                exchange.close()
+            }
+            start()
+        }
+        val profile = ServerProfile(
+            id = "profile",
+            displayName = "Test",
+            scheme = "http",
+            host = "127.0.0.1",
+            port = server.address.port,
+            basePath = "/",
+        )
+        val secrets = ProcessSecretStore().apply {
+            put(profile.id, StoredCredential("admin", "admin-password".toCharArray()))
+        }
+        val repository = SessionRepository(
+            secretStore = secrets,
+            transport = FileBrowserClient(),
+            tokenStore = mutableMapOf(profile.id to "token"),
+        )
+        try {
+            val result = repository.saveUser(
+                profile = profile,
+                user = ServerUser(id = 8, username = "test2"),
+            )
+
+            assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
+            assertEquals("admin-password", JSONObject(requestBody.get()).getString("current_password"))
+        } finally {
+            server.stop(0)
+            secrets.clearAll()
+        }
+    }
+
+    @Test
+    fun managedUserDeleteUsesStoredLoginPasswordWhenCurrentPasswordIsOmitted() = runTest {
+        val requestBody = AtomicReference("")
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                requestBody.set(exchange.requestBody.bufferedReader().use { it.readText() })
+                exchange.sendResponseHeaders(204, -1)
+                exchange.close()
+            }
+            start()
+        }
+        val profile = ServerProfile(
+            id = "profile",
+            displayName = "Test",
+            scheme = "http",
+            host = "127.0.0.1",
+            port = server.address.port,
+            basePath = "/",
+        )
+        val secrets = ProcessSecretStore().apply {
+            put(profile.id, StoredCredential("admin", "admin-password".toCharArray()))
+        }
+        val repository = SessionRepository(
+            secretStore = secrets,
+            transport = FileBrowserClient(),
+            tokenStore = mutableMapOf(profile.id to "token"),
+        )
+        try {
+            val result = repository.deleteUser(profile, id = 8)
+
+            assertTrue(result.exceptionOrNull()?.message, result.isSuccess)
+            assertEquals("admin-password", JSONObject(requestBody.get()).getString("current_password"))
         } finally {
             server.stop(0)
             secrets.clearAll()

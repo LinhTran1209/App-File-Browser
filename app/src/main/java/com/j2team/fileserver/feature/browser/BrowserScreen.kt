@@ -12,6 +12,7 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -79,6 +80,7 @@ import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.feature.preview.PreviewScreen
 import com.j2team.fileserver.feature.preview.PreviewKind
 import com.j2team.fileserver.feature.preview.PreviewRouter
+import com.j2team.fileserver.feature.preview.fetchSharedVideoThumbnail
 import com.j2team.fileserver.R
 import com.j2team.fileserver.folderIconResource
 import com.j2team.fileserver.formatBytes
@@ -89,6 +91,7 @@ import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.AppIcons
 import com.j2team.fileserver.core.ui.DialogOutlinedTextField
+import com.j2team.fileserver.core.ui.FolderNavigationRow
 import com.j2team.fileserver.feature.settings.AppSettings
 import com.j2team.fileserver.feature.transfers.TransferDirection
 import com.j2team.fileserver.feature.transfers.TransferState
@@ -134,6 +137,7 @@ fun BrowserScreen(
     var createFolderOpen by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
     var deleteConfirmationOpen by remember { mutableStateOf(false) }
+    var deleteOwners by remember { mutableStateOf<List<String>>(emptyList()) }
     var mutating by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<RemoteResource?>(null) }
     var pendingDownload by remember { mutableStateOf<RemoteResource?>(null) }
@@ -158,6 +162,9 @@ fun BrowserScreen(
     val unavailableDirectory = stringResource(R.string.download_directory_unavailable)
     val notPermittedMessage = stringResource(R.string.action_not_permitted)
     val pathNotFoundMessage = stringResource(R.string.path_not_found)
+    val uploadSizeUnavailable = stringResource(R.string.upload_size_unavailable)
+    val uploadQuotaExceededTemplate = stringResource(R.string.upload_quota_exceeded)
+    val shareLinkLabel = stringResource(R.string.share_link)
     val basePath = BrowserPath.normalize(profile?.basePath ?: "/")
 
     BackHandler(enabled = preview != null) { preview = null }
@@ -209,6 +216,29 @@ fun BrowserScreen(
         moveLoading = false
     }
 
+    suspend fun uploadFits(selectedBytes: Long?, label: String): Boolean {
+        val current = profile ?: return false
+        if (selectedBytes == null || selectedBytes < 0) {
+            mutationError = uploadSizeUnavailable
+            return false
+        }
+        val usage = withContext(Dispatchers.IO) { sessionRepository.diskUsage(current, path) }
+            .getOrElse {
+                mutationError = it.message ?: it.toString()
+                return false
+            }
+        if (!uploadSelectionFits(selectedBytes, usage.total, usage.used)) {
+            mutationError = String.format(
+                Locale.getDefault(),
+                uploadQuotaExceededTemplate,
+                label,
+                formatBytes((usage.total - usage.used).coerceAtLeast(0)),
+            )
+            return false
+        }
+        return true
+    }
+
     fun uploadFile(uri: Uri) {
         if (!directoryPermissions.canUpload) {
             mutationError = notPermittedMessage
@@ -216,6 +246,11 @@ fun BrowserScreen(
         }
         scope.launch {
             runCatching {
+                val metadata = withContext(Dispatchers.IO) {
+                    displayName(context.contentResolver, uri).orEmpty().ifBlank { "upload.bin" } to
+                        selectedDocumentSize(context.contentResolver, uri)
+                }
+                if (!uploadFits(metadata.second, metadata.first)) return@launch
                 context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 transferCoordinator?.enqueueFile(uri, path) ?: error("No active server")
             }.onFailure { mutationError = it.message ?: it.toString() }
@@ -229,6 +264,11 @@ fun BrowserScreen(
     val uploadFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null && directoryPermissions.canUpload && directoryPermissions.canCreate) scope.launch {
             runCatching {
+                val metadata = withContext(Dispatchers.IO) {
+                    val root = DocumentFile.fromTreeUri(context, uri) ?: error(uploadSizeUnavailable)
+                    (root.name ?: "folder") to selectedTreeSize(context.contentResolver, root)
+                }
+                if (!uploadFits(metadata.second, metadata.first)) return@launch
                 context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 transferCoordinator?.enqueueFolder(uri, path) ?: error("No active server")
             }.onSuccess { refresh() }.onFailure { mutationError = it.message ?: it.toString() }
@@ -399,7 +439,15 @@ fun BrowserScreen(
             modifier = Modifier.fillMaxWidth(0.82f),
             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
             title = { Text(stringResource(R.string.confirm_delete_title)) },
-            text = { Text(stringResource(R.string.confirm_delete_message, selected.size)) },
+            text = {
+                Text(
+                    if (deleteOwners.isNotEmpty()) {
+                        stringResource(R.string.owned_folder_delete_message, deleteOwners.joinToString(", "))
+                    } else {
+                        stringResource(R.string.confirm_delete_message, selected.size)
+                    },
+                )
+            },
             confirmButton = {
                 TextButton(
                     enabled = !mutating && actions.canDelete,
@@ -408,9 +456,15 @@ fun BrowserScreen(
                         mutating = true
                         scope.launch {
                             withContext(Dispatchers.IO) { sessionRepository.delete(current, selected.map { it.path }) }
-                                .onSuccess { selectedPaths = emptySet(); deleteConfirmationOpen = false; refresh() }
+                                .onSuccess {
+                                    selectedPaths = emptySet()
+                                    deleteOwners = emptyList()
+                                    deleteConfirmationOpen = false
+                                    refresh()
+                                }
                                 .onFailure {
                                     mutationError = it.message ?: it.toString()
+                                    deleteOwners = emptyList()
                                     deleteConfirmationOpen = false
                                     refresh()
                                 }
@@ -419,7 +473,15 @@ fun BrowserScreen(
                     },
                 ) { Text(stringResource(R.string.delete)) }
             },
-            dismissButton = { TextButton(onClick = { deleteConfirmationOpen = false }, enabled = !mutating) { Text(stringResource(R.string.cancel)) } },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        deleteOwners = emptyList()
+                        deleteConfirmationOpen = false
+                    },
+                    enabled = !mutating,
+                ) { Text(stringResource(R.string.cancel)) }
+            },
         )
     }
 
@@ -478,12 +540,12 @@ fun BrowserScreen(
                     if (moveLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
                     LazyColumn(Modifier.weight(1f)) {
                         items(moveDirectories, key = { it.path }) { directory ->
-                            TextButton(onClick = { moveDestination = directory.path }, modifier = Modifier.fillMaxWidth()) {
-                                Icon(painterResource(folderIconResource(settings.folderIconSet)), null, Modifier.size(28.dp), tint = Color.Unspecified)
-                                Spacer(Modifier.width(8.dp))
-                                Text(directory.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("›")
-                            }
+                            FolderNavigationRow(
+                                name = directory.name,
+                                iconRes = folderIconResource(settings.folderIconSet),
+                                folderContentDescription = directory.name,
+                                onClick = { moveDestination = directory.path },
+                            )
                         }
                     }
                 }
@@ -538,7 +600,7 @@ fun BrowserScreen(
                 onCopy = { share ->
                     val current = profile ?: return@ShareDialog
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.share_link), sessionRepository.shareUrl(current, share.hash)))
+                    clipboard.setPrimaryClip(ClipData.newPlainText(shareLinkLabel, sessionRepository.shareUrl(current, share.hash)))
                 },
                 onDelete = { share ->
                     val current = profile ?: return@ShareDialog
@@ -588,7 +650,30 @@ fun BrowserScreen(
                 if (actions.canMove) IconButton(onClick = { moveDestination = "/"; moveDialogOpen = true }, modifier = Modifier.size(48.dp)) {
                     Icon(painterResource(AppIcons.Move), stringResource(R.string.move))
                 }
-                if (actions.canDelete) IconButton(onClick = { deleteConfirmationOpen = true }, modifier = Modifier.size(48.dp)) {
+                if (actions.canDelete) IconButton(onClick = {
+                    val current = profile ?: return@IconButton
+                    mutating = true
+                    scope.launch {
+                        withContext(Dispatchers.IO) { sessionRepository.currentUser(current) }
+                            .fold(
+                                onSuccess = { user ->
+                                    if (user.admin) {
+                                        withContext(Dispatchers.IO) {
+                                            sessionRepository.resourceOwners(current, selected.map { it.path })
+                                        }.onSuccess {
+                                            deleteOwners = normalizedOwnerNames(it)
+                                            deleteConfirmationOpen = true
+                                        }.onFailure { mutationError = it.message ?: it.toString() }
+                                    } else {
+                                        deleteOwners = emptyList()
+                                        deleteConfirmationOpen = true
+                                    }
+                                },
+                                onFailure = { mutationError = it.message ?: it.toString() },
+                            )
+                        mutating = false
+                    }
+                }, modifier = Modifier.size(48.dp)) {
                     Icon(painterResource(AppIcons.Delete), stringResource(R.string.delete))
                 }
             })
@@ -889,8 +974,17 @@ private fun ResourceVisual(
             } else {
                 cacheFile.delete()
                 cacheFile.parentFile?.mkdirs()
-                sessionRepository.cachedVideoThumbnail(profile, item.path, cacheFile)
-                if (cacheFile.isFile && cacheFile.length() > 0L) {
+                val ready = fetchSharedVideoThumbnail(
+                    fetch = {
+                        cacheFile.delete()
+                        sessionRepository.cachedVideoThumbnail(profile, item.path, cacheFile).isSuccess &&
+                            cacheFile.isFile && cacheFile.length() > 0L
+                    },
+                    queue = {
+                        sessionRepository.requestVideoThumbnail(profile, item.path).isSuccess
+                    },
+                )
+                if (ready) {
                     AppCacheManager.recordWrite(context, cacheFile)
                     BitmapFactory.decodeFile(cacheFile.path)
                 } else {
@@ -919,6 +1013,22 @@ private class UploadNotPermitted : IllegalStateException()
 
 private fun displayName(resolver: ContentResolver, uri: Uri): String? = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
     if (cursor.moveToFirst()) cursor.getString(0) else null
+}
+
+private fun selectedDocumentSize(resolver: ContentResolver, uri: Uri): Long? =
+    resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+        if (!cursor.moveToFirst() || cursor.isNull(0)) null else cursor.getLong(0).takeIf { it >= 0 }
+    }
+
+private fun selectedTreeSize(resolver: ContentResolver, document: DocumentFile): Long? {
+    if (document.isFile) return selectedDocumentSize(resolver, document.uri)
+    if (!document.isDirectory) return null
+    var total = 0L
+    for (child in document.listFiles()) {
+        val childSize = selectedTreeSize(resolver, child) ?: return null
+        total = runCatching { Math.addExact(total, childSize) }.getOrNull() ?: return null
+    }
+    return total
 }
 
 private suspend fun uploadTree(

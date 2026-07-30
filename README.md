@@ -4,7 +4,7 @@ File Server is a native Android client for browsing, streaming, transferring, an
 
 The Android client uses paginated directory browsing, authenticated media streaming, bounded preview caching, resumable transfer tracking, and server-side permissions. Optional Raspberry Pi helpers provide low-cost video thumbnails and automatic USB mounting.
 
-Current application version: **1.5.0**
+Current application version: **1.6.0**
 
 ## Screenshots
 
@@ -45,7 +45,8 @@ Current application version: **1.5.0**
 
 ### Administration and customization
 
-- Manage profile options, shares, users, permissions, and supported global server settings from the app.
+- Manage profile options, shares, users, permissions, assigned folders, and storage quotas from the app.
+- Check available account storage before uploads and warn before deleting folders assigned to users.
 - Use Vietnamese or English.
 - Follow the system theme or force light/dark mode.
 - Choose list/grid layout, download directory, and folder icon style.
@@ -83,7 +84,7 @@ App-File-Browser/
 `-- settings.gradle.kts
 ```
 
-The Android app communicates directly with File Browser's HTTP API. Authentication tokens are attached to API and Media3 streaming requests. Thumbnail requests can optionally be delegated to the companion service so large video folders remain responsive on the phone.
+The Android app communicates directly with File Browser's HTTP API. Authentication tokens are attached to API and Media3 streaming requests. Video thumbnails use the customized File Browser shared-thumbnail API so every authorized account can reuse the server-generated cache.
 
 ## Requirements
 
@@ -120,7 +121,7 @@ From the repository root, set `JAVA_HOME` and `ANDROID_HOME`, then run:
 The debug APK is written to:
 
 ```text
-app/build/outputs/apk/debug/file-server-v1.5.0-debug.apk
+app/build/outputs/apk/debug/file-server-v1.6.0-debug.apk
 ```
 
 Install or update it on a connected device:
@@ -135,9 +136,9 @@ Run only the JVM unit tests:
 .\gradlew.bat testDebugUnitTest
 ```
 
-## Raspberry Pi video thumbnail service
+## Legacy Raspberry Pi video thumbnail service
 
-The companion in `server/thumbnail-service` produces small cached thumbnails without making the Android device decode long videos.
+The companion in `server/thumbnail-service` is retained for older deployments. File Server Android v1.6.0 uses the integrated `/api/video-thumbnail` endpoint in the customized File Browser server and does not require port 8890.
 
 Build and install the binary on the server, then adapt the supplied systemd unit:
 

@@ -9,19 +9,21 @@ import com.j2team.fileserver.core.model.ShareDurationUnit
 import com.j2team.fileserver.core.model.ShareLink
 import com.j2team.fileserver.core.model.ServerGlobalSettings
 import com.j2team.fileserver.core.model.ServerUser
+import com.j2team.fileserver.core.model.AdminDirectoryListing
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.network.PreviewProbe
-import com.j2team.fileserver.core.network.ThumbnailServiceClient
 import java.io.File
+import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 class SessionRepository(
     private val secretStore: SecretStore,
     private val transport: FileBrowserClient,
-    private val thumbnailTransport: ThumbnailServiceClient = ThumbnailServiceClient(),
     private val tokenStore: MutableMap<String, String> = ConcurrentHashMap(),
 ) {
+    private val permissionCache = SessionPermissionCache()
+
     fun isReachable(profile: ServerProfile): Boolean = transport.isReachable(profile)
     suspend fun open(profile: ServerProfile): Result<AuthenticatedSession> =
         authenticated(profile) { token ->
@@ -37,6 +39,7 @@ class SessionRepository(
         try {
             val token = transport.login(profile, username, passwordText).getOrThrow()
             secretStore.put(profile.id, StoredCredential(username, password))
+            permissionCache.clear(profile.id)
             tokenStore[profile.id] = token
             AuthenticatedSession(profile, token)
         } finally {
@@ -55,11 +58,11 @@ class SessionRepository(
         authenticated(profile) { token -> transport.listResult(profile, token, path) }
 
     suspend fun currentPermissions(profile: ServerProfile): Result<ResourcePermissions> =
-        authenticated(profile) { token -> transport.currentPermissionsResult(profile, token) }
+        authenticated(profile) { token -> permissionResult(profile, token) }
 
     suspend fun listWithPermissions(profile: ServerProfile, path: String): Result<ResourceListing> =
         authenticated(profile) { token ->
-            val capabilities = transport.currentPermissionsResult(profile, token)
+            val capabilities = permissionResult(profile, token)
             if (capabilities.code !in 200..299) return@authenticated ApiResult(capabilities.code, error = capabilities.error)
             val permission = capabilities.value ?: ResourcePermissions()
             transport.listWithPermissionsResult(profile, token, path).map { listing ->
@@ -139,7 +142,7 @@ class SessionRepository(
 
     suspend fun cachedVideoThumbnail(profile: ServerProfile, remotePath: String, destination: File): Result<File> =
         authenticated(profile) { token ->
-            thumbnailTransport.cachedThumbnailResult(profile, token, remotePath, destination)
+            transport.videoThumbnailResult(profile, token, remotePath, destination)
         }
 
     suspend fun diskUsage(profile: ServerProfile, path: String): Result<DiskUsage> =
@@ -154,6 +157,22 @@ class SessionRepository(
     suspend fun users(profile: ServerProfile): Result<List<ServerUser>> =
         authenticated(profile) { token -> transport.usersResult(profile, token) }
 
+    suspend fun user(profile: ServerProfile, id: Long): Result<ServerUser> =
+        authenticated(profile) { token -> transport.userResult(profile, token, id) }
+
+    suspend fun adminDirectories(profile: ServerProfile, path: String): Result<AdminDirectoryListing> =
+        authenticated(profile) { token -> transport.adminDirectoriesResult(profile, token, path) }
+
+    suspend fun createAdminDirectory(
+        profile: ServerProfile,
+        parent: String,
+        name: String,
+    ): Result<AdminDirectoryListing> =
+        authenticated(profile) { token -> transport.createAdminDirectoryResult(profile, token, parent, name) }
+
+    suspend fun resourceOwners(profile: ServerProfile, paths: List<String>): Result<List<String>> =
+        authenticated(profile) { token -> transport.resourceOwnersResult(profile, token, paths) }
+
     suspend fun saveUser(
         profile: ServerProfile,
         user: ServerUser,
@@ -161,8 +180,16 @@ class SessionRepository(
         currentPassword: String = "",
         profileOnly: Boolean = false,
     ): Result<ServerUser> {
-        val result = authenticated(profile) { token ->
-            transport.saveUserResult(profile, token, user, newPassword, currentPassword, profileOnly)
+        val storedCredential = if (currentPassword.isBlank()) secretStore.get(profile.id) else null
+        val requestPassword = currentPassword.ifBlank {
+            storedCredential?.password?.concatToString().orEmpty()
+        }
+        val result = try {
+            authenticated(profile) { token ->
+                transport.saveUserResult(profile, token, user, newPassword, requestPassword, profileOnly)
+            }
+        } finally {
+            storedCredential?.password?.fill('\u0000')
         }
         if (result.isSuccess && profileOnly && newPassword.isNotBlank()) {
             val existing = secretStore.get(profile.id)
@@ -176,8 +203,35 @@ class SessionRepository(
         return result
     }
 
-    suspend fun deleteUser(profile: ServerProfile, id: Long, currentPassword: String = ""): Result<Unit> =
-        authenticated(profile) { token -> transport.deleteUserResult(profile, token, id, currentPassword) }
+    private suspend fun permissionResult(
+        profile: ServerProfile,
+        token: String,
+    ): ApiResult<ResourcePermissions> = try {
+        val permissions = permissionCache.getOrLoad(profile.id) {
+            val response = transport.currentPermissionsResult(profile, token)
+            if (response.code !in 200..299) {
+                throw response.error ?: IOException("Unable to load permissions (${response.code})")
+            }
+            response.value ?: ResourcePermissions()
+        }
+        ApiResult(200, permissions)
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    suspend fun deleteUser(profile: ServerProfile, id: Long, currentPassword: String = ""): Result<Unit> {
+        val storedCredential = if (currentPassword.isBlank()) secretStore.get(profile.id) else null
+        val requestPassword = currentPassword.ifBlank {
+            storedCredential?.password?.concatToString().orEmpty()
+        }
+        return try {
+            authenticated(profile) { token ->
+                transport.deleteUserResult(profile, token, id, requestPassword)
+            }
+        } finally {
+            storedCredential?.password?.fill('\u0000')
+        }
+    }
 
     suspend fun serverSettings(profile: ServerProfile): Result<ServerGlobalSettings> =
         authenticated(profile) { token -> transport.settingsResult(profile, token) }
@@ -210,7 +264,7 @@ class SessionRepository(
 
     suspend fun requestVideoThumbnail(profile: ServerProfile, remotePath: String): Result<Unit> =
         authenticated(profile) { token ->
-            thumbnailTransport.requestThumbnailResult(profile, token, remotePath)
+            transport.queueVideoThumbnailResult(profile, token, remotePath)
         }
 
     /**

@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -53,6 +54,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.j2team.fileserver.AppBar
 import com.j2team.fileserver.R
+import com.j2team.fileserver.formatBytes
+import com.j2team.fileserver.core.model.AdminDirectoryListing
+import com.j2team.fileserver.core.model.QuotaUnit
 import com.j2team.fileserver.core.model.ServerGlobalSettings
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.model.ServerSettingsSection
@@ -61,6 +65,10 @@ import com.j2team.fileserver.core.model.ServerUserPermissions
 import com.j2team.fileserver.core.model.ShareLink
 import com.j2team.fileserver.core.model.bytesToMegabytes
 import com.j2team.fileserver.core.model.megabytesToBytes
+import com.j2team.fileserver.core.model.quotaBytesFromInput
+import com.j2team.fileserver.core.model.quotaInputFromBytes
+import com.j2team.fileserver.core.model.StorageValidation
+import com.j2team.fileserver.core.model.validateUserStorage
 import com.j2team.fileserver.core.model.visibleSettingsSections
 import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.AppIcons
@@ -211,6 +219,9 @@ fun ServerSettingsScreen(
                 )
                 ServerSettingsSection.Users -> UsersSettings(
                     users = users,
+                    profile = currentProfile,
+                    repository = repository,
+                    defaultFolder = global.userHomeBasePath,
                     busy = busy,
                     onSave = { updated, password ->
                         busy = true
@@ -218,7 +229,12 @@ fun ServerSettingsScreen(
                         scope.launch {
                             withContext(Dispatchers.IO) { repository.saveUser(currentProfile, updated, password) }
                                 .onSuccess { saved ->
-                                    users = (users.filterNot { it.id == saved.id } + saved).sortedBy { it.username.lowercase() }
+                                    withContext(Dispatchers.IO) { repository.users(currentProfile) }
+                                        .onSuccess { refreshed -> users = refreshed.sortedBy { it.username.lowercase() } }
+                                        .onFailure {
+                                            users = (users.filterNot { it.id == saved.id } + saved)
+                                                .sortedBy { it.username.lowercase() }
+                                        }
                                     showUpdateSuccess()
                                 }.onFailure { error = it.message ?: it.toString() }
                             busy = false
@@ -345,18 +361,49 @@ private fun GlobalSettings(settings: ServerGlobalSettings, busy: Boolean, onSave
 @Composable
 private fun UsersSettings(
     users: List<ServerUser>,
+    profile: ServerProfile,
+    repository: SessionRepository,
+    defaultFolder: String,
     busy: Boolean,
     onSave: (ServerUser, String) -> Unit,
     onDelete: (ServerUser) -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf<ServerUser?>(null) }
     var creating by remember { mutableStateOf(false) }
+    var editorLoading by remember { mutableStateOf(false) }
+    var editorError by remember { mutableStateOf<String?>(null) }
+    var deleteCandidate by remember { mutableStateOf<ServerUser?>(null) }
+
+    fun edit(user: ServerUser) {
+        creating = false
+        editorLoading = true
+        editorError = null
+        scope.launch {
+            withContext(Dispatchers.IO) { repository.user(profile, user.id) }
+                .onSuccess { editing = it }
+                .onFailure { editorError = it.message ?: it.toString() }
+            editorLoading = false
+        }
+    }
+
     SettingsList {
         item {
             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 SectionTitle(stringResource(R.string.users), Modifier.weight(1f))
-                Button(onClick = { creating = true; editing = ServerUser(0, "") }) { Text(stringResource(R.string.new_user)) }
+                Button(
+                    onClick = {
+                        creating = true
+                        editing = ServerUser(0, "", scope = defaultFolder.ifBlank { "/" })
+                    },
+                ) { Text(stringResource(R.string.new_user)) }
             }
+        }
+        editorError?.let { message ->
+            item { Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+        }
+        if (editorLoading) {
+            item { CircularProgressIndicator(Modifier.padding(16.dp)) }
         }
         items(users, key = { it.id }) { user ->
             Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -365,8 +412,14 @@ private fun UsersSettings(
                         Text(user.username, style = MaterialTheme.typography.titleMedium)
                         Text(user.scope, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    TextButton(onClick = { creating = false; editing = user }) { Text(stringResource(R.string.edit)) }
-                    if (!user.admin) TextButton(onClick = { onDelete(user) }, enabled = !busy) { Text(stringResource(R.string.delete)) }
+                    TextButton(onClick = { edit(user) }, enabled = !busy && !editorLoading) {
+                        Text(stringResource(R.string.edit))
+                    }
+                    if (!user.admin) {
+                        TextButton(onClick = { deleteCandidate = user }, enabled = !busy) {
+                            Text(stringResource(R.string.delete))
+                        }
+                    }
                 }
             }
         }
@@ -376,16 +429,68 @@ private fun UsersSettings(
             user = user,
             creating = creating,
             busy = busy,
+            profile = profile,
+            repository = repository,
             onDismiss = { editing = null },
             onSave = { updated, password -> onSave(updated, password); editing = null },
+            onDelete = if (creating || user.admin) null else {
+                { deleteCandidate = user }
+            },
+        )
+    }
+    deleteCandidate?.let { user ->
+        AlertDialog(
+            onDismissRequest = { if (!busy) deleteCandidate = null },
+            modifier = Modifier.fillMaxWidth(0.9f),
+            shape = RoundedCornerShape(24.dp),
+            title = { Text(stringResource(R.string.delete_user_title)) },
+            text = { Text(stringResource(R.string.delete_user_message, user.username)) },
+            confirmButton = {
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        editing = null
+                        deleteCandidate = null
+                        onDelete(user)
+                    },
+                ) { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteCandidate = null }, enabled = !busy) {
+                    Text(stringResource(R.string.cancel))
+                }
+            },
         )
     }
 }
 
 @Composable
-private fun UserEditorDialog(user: ServerUser, creating: Boolean, busy: Boolean, onDismiss: () -> Unit, onSave: (ServerUser, String) -> Unit) {
+private fun UserEditorDialog(
+    user: ServerUser,
+    creating: Boolean,
+    busy: Boolean,
+    profile: ServerProfile,
+    repository: SessionRepository,
+    onDismiss: () -> Unit,
+    onSave: (ServerUser, String) -> Unit,
+    onDelete: (() -> Unit)?,
+) {
     var draft by remember(user) { mutableStateOf(user) }
     var password by remember { mutableStateOf("") }
+    val initialQuota = remember(user) { quotaInputFromBytes(user.quotaBytes) }
+    var quotaValue by remember(user) { mutableStateOf(initialQuota.value) }
+    var quotaUnit by remember(user) { mutableStateOf(initialQuota.unit) }
+    var quotaUnlimited by remember(user) { mutableStateOf(initialQuota.unlimited) }
+    var selectedListing by remember(user) { mutableStateOf<AdminDirectoryListing?>(null) }
+    var folderMissing by remember(user) { mutableStateOf(user.scopeMissing) }
+    val quotaBytes = quotaBytesFromInput(quotaValue, quotaUnit, quotaUnlimited)
+    val storageValidation = validateUserStorage(
+        scopeMissing = folderMissing,
+        quotaBytes = quotaBytes,
+        unlimited = quotaUnlimited,
+        listing = selectedListing,
+    )
+    val storageValid = storageValidation == StorageValidation.Valid
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -414,11 +519,119 @@ private fun UserEditorDialog(user: ServerUser, creating: Boolean, busy: Boolean,
                         ) { draft = draft.copy(username = it) }
                     }
                     item {
-                        SettingField(
-                            stringResource(R.string.scope),
-                            draft.scope,
+                        ServerFolderPicker(
+                            profile = profile,
+                            repository = repository,
+                            selectedPath = draft.scope,
+                            enabled = !busy,
+                            onSelected = { draft = draft.copy(scope = it, scopeMissing = false) },
+                            onSelectedListing = {
+                                selectedListing = it
+                                folderMissing = it == null
+                            },
+                        )
+                    }
+                    if (folderMissing) {
+                        item {
+                            Text(
+                                stringResource(R.string.user_folder_missing),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                    selectedListing?.let { capacity ->
+                        item {
+                            Text(
+                                stringResource(
+                                    R.string.folder_capacity,
+                                    formatBytes(capacity.total),
+                                    formatBytes(capacity.used),
+                                    formatBytes(capacity.free),
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        item {
+                            Text(
+                                stringResource(R.string.folder_content_size, formatBytes(capacity.contentBytes)),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                    item {
+                        ToggleRow(
+                            stringResource(R.string.unlimited_quota),
+                            quotaUnlimited,
                             modifier = Modifier.fillMaxWidth(),
-                        ) { draft = draft.copy(scope = it) }
+                        ) { quotaUnlimited = it }
+                    }
+                    if (!quotaUnlimited) {
+                        item {
+                            OutlinedTextField(
+                                value = quotaValue,
+                                onValueChange = { quotaValue = it },
+                                label = { Text(stringResource(R.string.storage_quota)) },
+                                isError = storageValidation in setOf(
+                                    StorageValidation.InvalidQuota,
+                                    StorageValidation.BelowFolderContent,
+                                    StorageValidation.AboveFilesystem,
+                                ),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        item {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                QuotaUnit.entries.forEach { unit ->
+                                    FilterChip(
+                                        selected = quotaUnit == unit,
+                                        onClick = { quotaUnit = unit },
+                                        label = { Text(unit.name) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    when (storageValidation) {
+                        StorageValidation.InvalidQuota -> item {
+                            Text(stringResource(R.string.quota_invalid), color = MaterialTheme.colorScheme.error)
+                        }
+                        StorageValidation.BelowFolderContent -> item {
+                            Text(
+                                stringResource(
+                                    R.string.quota_below_content,
+                                    formatBytes(selectedListing?.contentBytes ?: 0),
+                                ),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        StorageValidation.AboveFilesystem -> item {
+                            Text(
+                                stringResource(
+                                    R.string.quota_above_disk,
+                                    formatBytes(selectedListing?.total ?: 0),
+                                ),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        else -> Unit
+                    }
+                    if (!creating) {
+                        item {
+                            Text(
+                                if (user.quotaBytes > 0) {
+                                    stringResource(
+                                        R.string.user_quota_usage,
+                                        formatBytes(user.quotaUsedBytes),
+                                        formatBytes(user.quotaBytes),
+                                        formatBytes(user.quotaRemainingBytes),
+                                    )
+                                } else {
+                                    stringResource(R.string.user_storage_used, formatBytes(user.quotaUsedBytes))
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                     if (creating) {
                         item {
@@ -450,10 +663,26 @@ private fun UserEditorDialog(user: ServerUser, creating: Boolean, busy: Boolean,
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    onDelete?.let { delete ->
+                        TextButton(onClick = delete, enabled = !busy) {
+                            Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error)
+                        }
+                        Spacer(Modifier.weight(1f))
+                    }
                     TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) }
                     TextButton(
-                        onClick = { onSave(draft, password) },
-                        enabled = !busy && draft.username.isNotBlank() && (!creating || password.isNotBlank()),
+                        onClick = {
+                            onSave(
+                                draft.copy(
+                                    quotaBytes = quotaBytes ?: 0,
+                                    quotaUnlimited = quotaUnlimited,
+                                    scopeMissing = false,
+                                ),
+                                password,
+                            )
+                        },
+                        enabled = !busy && storageValid && draft.username.isNotBlank() &&
+                            (!creating || password.isNotBlank()),
                     ) {
                         Text(stringResource(if (creating) R.string.save else R.string.update))
                     }

@@ -148,4 +148,24 @@
     <string name="save">L&#432;u</string>
     <string name="update">C&#7853;p nh&#7853;t</string>
     <string name="update_success">C&#7853;p nh&#7853;t th&#224;nh c&#244;ng!</string>
+    <string name="user_folder">Thư mục người dùng</string>
+    <string name="choose_folder">Chọn thư mục</string>
+    <string name="new_folder_name">Tên thư mục mới</string>
+    <string name="select_this_folder">Chọn thư mục này</string>
+    <string name="parent_folder">Thư mục cha</string>
+    <string name="user_folder_missing">Thư mục được cấp không còn tồn tại. Hãy chọn hoặc tạo thư mục hợp lệ.</string>
+    <string name="folder_capacity">Ổ đĩa: tổng %1$s · đã dùng %2$s · còn trống %3$s</string>
+    <string name="folder_content_size">Dữ liệu đang có trong thư mục: %1$s</string>
+    <string name="unlimited_quota">Không giới hạn dung lượng</string>
+    <string name="storage_quota">Giới hạn dung lượng</string>
+    <string name="quota_invalid">Hãy nhập giới hạn dung lượng hợp lệ.</string>
+    <string name="quota_below_content">Giới hạn phải ít nhất bằng dữ liệu đang có: %1$s.</string>
+    <string name="quota_above_disk">Giới hạn không được vượt quá tổng dung lượng ổ: %1$s.</string>
+    <string name="user_quota_usage">Đã dùng %1$s / %2$s · còn lại %3$s</string>
+    <string name="user_storage_used">Đã dùng %1$s · không giới hạn</string>
+    <string name="delete_user_title">Xóa người dùng?</string>
+    <string name="delete_user_message">Bạn có chắc chắn muốn xóa người dùng %1$s không?</string>
+    <string name="upload_quota_exceeded">Không thể tải lên %1$s: tài khoản chỉ còn %2$s.</string>
+    <string name="upload_size_unavailable">Không thể xác định dung lượng của nội dung đã chọn.</string>
+    <string name="owned_folder_delete_message">Thư mục này thuộc về hoặc chứa thư mục của người dùng: %1$s. Bạn có chắc chắn muốn xóa không?</string>
 </resources>

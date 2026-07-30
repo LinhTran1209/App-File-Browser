@@ -216,7 +216,7 @@ class FileMutationRequestTest {
     }
 
     @Test
-    fun profilePasswordUpdateUsesEncodedPasswordHeaderAndProfileOnlyFields() {
+    fun profilePasswordUpdateUsesBackendPasswordFieldAndProfileOnlyFields() {
         val passwordHeader = AtomicReference<String?>()
         val requestBody = AtomicReference<String>()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
@@ -239,9 +239,9 @@ class FileMutationRequestTest {
             )
 
             assertTrue(result.error?.message, result.code in 200..299)
-            assertEquals("old%20pass%2B%3F", passwordHeader.get())
+            assertEquals(null, passwordHeader.get())
             val body = JSONObject(requestBody.get())
-            assertFalse(body.has("current_password"))
+            assertEquals("old pass+?", body.getString("current_password"))
             val which = body.getJSONArray("which").let { array ->
                 (0 until array.length()).map(array::getString)
             }
@@ -252,11 +252,11 @@ class FileMutationRequestTest {
             assertFalse("perm" in which)
             val data = body.getJSONObject("data")
             assertEquals(
-                setOf("hideDotfiles", "singleClick", "redirectAfterCopyMove", "dateFormat", "password"),
+                setOf("id", "hideDotfiles", "singleClick", "redirectAfterCopyMove", "dateFormat", "password"),
                 data.keys().asSequence().toSet(),
             )
             assertEquals("new-password", data.getString("password"))
-            assertFalse(data.has("id"))
+            assertEquals(7, data.getLong("id"))
             assertFalse(data.has("username"))
             assertFalse(data.has("scope"))
             assertFalse(data.has("perm"))

@@ -9,7 +9,7 @@ import com.j2team.fileserver.core.model.ShareDurationUnit
 import com.j2team.fileserver.core.model.ShareLink
 import com.j2team.fileserver.core.model.ServerGlobalSettings
 import com.j2team.fileserver.core.model.ServerUser
-import com.j2team.fileserver.core.model.ServerUserPermissions
+import com.j2team.fileserver.core.model.AdminDirectoryListing
 import com.j2team.fileserver.core.session.ApiResult
 import org.json.JSONArray
 import org.json.JSONObject
@@ -367,6 +367,52 @@ class FileBrowserClient {
         ApiResult(-1, error = error)
     }
 
+    fun videoThumbnailResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        destination: File,
+    ): ApiResult<File> = try {
+        val encodedPath = URLEncoder.encode(remotePath, Charsets.UTF_8.name()).replace("+", "%20")
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/video-thumbnail?path=$encodedPath", "GET")
+        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            return ApiResult(code, error = IOException(requestError("Video thumbnail unavailable", code, connection)))
+        }
+        destination.parentFile?.mkdirs()
+        val temporary = File(destination.parentFile, ".${destination.name}.part")
+        try {
+            connection.inputStream.use { input ->
+                temporary.outputStream().buffered().use(input::copyTo)
+            }
+            check(temporary.length() > 0L) { "Empty video thumbnail" }
+            if (destination.exists() && !destination.delete()) throw IOException("Unable to replace video thumbnail")
+            check(temporary.renameTo(destination)) { "Unable to publish video thumbnail" }
+            ApiResult(code, destination)
+        } finally {
+            temporary.delete()
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun queueVideoThumbnailResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+    ): ApiResult<Unit> {
+        val encodedPath = URLEncoder.encode(remotePath, Charsets.UTF_8.name()).replace("+", "%20")
+        val result = jsonRequest(
+            profile = profile,
+            token = token,
+            path = "/api/video-thumbnail?path=$encodedPath",
+            method = "POST",
+        )
+        return if (result.code in 200..299) ApiResult(result.code, Unit)
+        else ApiResult(result.code, error = result.error)
+    }
+
     fun sharesResult(profile: ServerProfile, token: String? = null, path: String): ApiResult<List<ShareLink>> = try {
         val connection = open(apiUrl(profile, "/api/share", path), "GET")
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
@@ -552,7 +598,7 @@ class FileBrowserClient {
         if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load users", code, connection)))
         val array = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
         ApiResult(code, buildList {
-            for (index in 0 until array.length()) add(serverUserOf(array.getJSONObject(index)))
+            for (index in 0 until array.length()) add(ServerStorageCodec.user(array.getJSONObject(index)))
         })
     } catch (error: Throwable) {
         ApiResult(-1, error = error)
@@ -563,7 +609,7 @@ class FileBrowserClient {
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
         val code = connection.responseCode
         if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load user", code, connection)))
-        ApiResult(code, serverUserOf(JSONObject(connection.inputStream.bufferedReader().use { it.readText() })))
+        ApiResult(code, ServerStorageCodec.user(JSONObject(connection.inputStream.bufferedReader().use { it.readText() })))
     } catch (error: Throwable) {
         ApiResult(-1, error = error)
     }
@@ -578,37 +624,19 @@ class FileBrowserClient {
     ): ApiResult<ServerUser> = try {
         val creating = user.id <= 0
         val url = profile.endpoint.trimEnd('/') + "/api/users" + if (creating) "" else "/${user.id}"
-        val which = JSONArray().apply {
-            if (!profileOnly) {
-                put("username"); put("scope"); put("perm"); put("lockPassword")
-            }
-            put("hideDotfiles"); put("singleClick"); put("redirectAfterCopyMove"); put("dateFormat")
-            if (newPassword.isNotBlank()) put("password")
-        }
-        val completeUser = serverUserJson(user).apply {
-            if (newPassword.isNotBlank()) put("password", newPassword)
-        }
-        val payloadUser = if (creating) {
-            completeUser
-        } else {
-            JSONObject().apply {
-                for (index in 0 until which.length()) {
-                    val field = which.getString(index)
-                    put(field, completeUser.get(field))
-                }
-            }
-        }
-        val body = JSONObject()
-            .put("what", "user")
-            .put("which", which)
-            .put("data", payloadUser)
+        val body = ServerStorageCodec.userMutation(
+            user = user,
+            newPassword = newPassword,
+            creating = creating,
+            currentPassword = currentPassword,
+            profileOnly = profileOnly,
+        )
         val result = jsonRequest(
             profile = profile,
             token = token,
             path = if (creating) "/api/users" else "/api/users/${user.id}",
             method = if (creating) "POST" else "PUT",
             body = body,
-            actorPassword = currentPassword,
         )
         if (result.code !in 200..299) {
             ApiResult(result.code, error = result.error)
@@ -616,7 +644,7 @@ class FileBrowserClient {
             val responseUser = result.value
                 ?.trim()
                 ?.takeIf { it.startsWith("{") }
-                ?.let { serverUserOf(JSONObject(it)) }
+                ?.let { ServerStorageCodec.user(JSONObject(it)) }
             ApiResult(result.code, responseUser ?: user)
         }
     } catch (error: Throwable) {
@@ -629,6 +657,56 @@ class FileBrowserClient {
             JSONObject().put("current_password", currentPassword),
         )
         return if (result.code in 200..299) ApiResult(result.code, Unit) else ApiResult(result.code, error = result.error)
+    }
+
+    fun adminDirectoriesResult(
+        profile: ServerProfile,
+        token: String?,
+        path: String,
+    ): ApiResult<AdminDirectoryListing> = try {
+        val encodedPath = URLEncoder.encode(path, Charsets.UTF_8.name()).replace("+", "%20")
+        val result = jsonRequest(profile, token, "/api/admin/directories?path=$encodedPath", "GET")
+        if (result.code !in 200..299) ApiResult(result.code, error = result.error)
+        else ApiResult(result.code, ServerStorageCodec.directory(JSONObject(result.value ?: "{}")))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun createAdminDirectoryResult(
+        profile: ServerProfile,
+        token: String?,
+        parent: String,
+        name: String,
+    ): ApiResult<AdminDirectoryListing> = try {
+        val result = jsonRequest(
+            profile,
+            token,
+            "/api/admin/directories",
+            "POST",
+            JSONObject().put("parent", parent).put("name", name),
+        )
+        if (result.code !in 200..299) ApiResult(result.code, error = result.error)
+        else ApiResult(result.code, ServerStorageCodec.directory(JSONObject(result.value ?: "{}")))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun resourceOwnersResult(
+        profile: ServerProfile,
+        token: String?,
+        paths: List<String>,
+    ): ApiResult<List<String>> = try {
+        val result = jsonRequest(
+            profile,
+            token,
+            "/api/resource-owners",
+            "POST",
+            JSONObject().put("paths", JSONArray(paths)),
+        )
+        if (result.code !in 200..299) ApiResult(result.code, error = result.error)
+        else ApiResult(result.code, ServerStorageCodec.owners(JSONObject(result.value ?: "{}")))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     fun settingsResult(profile: ServerProfile, token: String?): ApiResult<ServerGlobalSettings> = try {
@@ -688,51 +766,6 @@ class FileBrowserClient {
         userId = item.optLong("userID", item.optLong("userId")),
         username = item.optString("username"),
     )
-
-    private fun serverUserOf(item: JSONObject): ServerUser {
-        val perm = item.optJSONObject("perm") ?: JSONObject()
-        return ServerUser(
-            id = item.optLong("id"),
-            username = item.optString("username"),
-            scope = item.optString("scope", "/"),
-            locale = item.optString("locale", "en"),
-            admin = perm.optBoolean("admin", item.optBoolean("admin")),
-            lockPassword = item.optBoolean("lockPassword"),
-            hideDotfiles = item.optBoolean("hideDotfiles"),
-            singleClick = item.optBoolean("singleClick"),
-            redirectAfterCopyMove = item.optBoolean("redirectAfterCopyMove"),
-            dateFormat = item.optBoolean("dateFormat"),
-            aceEditorTheme = item.optString("aceEditorTheme"),
-            permissions = ServerUserPermissions(
-                create = perm.optBoolean("create"),
-                delete = perm.optBoolean("delete"),
-                download = perm.optBoolean("download"),
-                modify = perm.optBoolean("modify"),
-                rename = perm.optBoolean("rename"),
-                share = perm.optBoolean("share"),
-            ),
-        )
-    }
-
-    private fun serverUserJson(user: ServerUser): JSONObject = JSONObject()
-        .put("id", user.id)
-        .put("username", user.username)
-        .put("scope", user.scope)
-        .put("locale", user.locale)
-        .put("lockPassword", user.lockPassword)
-        .put("hideDotfiles", user.hideDotfiles)
-        .put("singleClick", user.singleClick)
-        .put("redirectAfterCopyMove", user.redirectAfterCopyMove)
-        .put("dateFormat", user.dateFormat)
-        .put("aceEditorTheme", user.aceEditorTheme)
-        .put("perm", JSONObject()
-            .put("admin", user.admin)
-            .put("create", user.permissions.create)
-            .put("delete", user.permissions.delete)
-            .put("download", user.permissions.download)
-            .put("modify", user.permissions.modify)
-            .put("rename", user.permissions.rename)
-            .put("share", user.permissions.share))
 
     private fun globalSettingsOf(item: JSONObject): ServerGlobalSettings {
         val branding = item.optJSONObject("branding") ?: JSONObject()

@@ -35,7 +35,8 @@ private val LightColors = lightColorScheme(
     surface = Color.White,
     onSurface = Color(0xFF030712),
     onSurfaceVariant = Color(0xFF374151),
-    outline = Color(0xFFE5E7EB),
+    outline = Color(0xFF9CA3AF),
+    outlineVariant = Color(0xFFD1D5DB),
 )
 
 private val DarkColors = darkColorScheme(
@@ -103,7 +104,7 @@ private val FileServerShapes = Shapes(
     small = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
     medium = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
     large = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(50),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
 )
 
 object FileServerSpacing {

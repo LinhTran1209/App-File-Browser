@@ -148,4 +148,24 @@
     <string name="save">Save</string>
     <string name="update">Update</string>
     <string name="update_success">Updated successfully!</string>
+    <string name="user_folder">User folder</string>
+    <string name="choose_folder">Choose folder</string>
+    <string name="new_folder_name">New folder name</string>
+    <string name="select_this_folder">Select this folder</string>
+    <string name="parent_folder">Parent folder</string>
+    <string name="user_folder_missing">The assigned folder no longer exists. Choose or create a valid folder.</string>
+    <string name="folder_capacity">Disk: %1$s total · %2$s used · %3$s free</string>
+    <string name="folder_content_size">Existing data in this folder: %1$s</string>
+    <string name="unlimited_quota">Unlimited storage</string>
+    <string name="storage_quota">Storage quota</string>
+    <string name="quota_invalid">Enter a valid storage quota.</string>
+    <string name="quota_below_content">Quota must be at least the existing data size: %1$s.</string>
+    <string name="quota_above_disk">Quota cannot exceed the disk capacity: %1$s.</string>
+    <string name="user_quota_usage">%1$s of %2$s used · %3$s remaining</string>
+    <string name="user_storage_used">%1$s used · unlimited</string>
+    <string name="delete_user_title">Delete user?</string>
+    <string name="delete_user_message">Are you sure you want to delete user %1$s?</string>
+    <string name="upload_quota_exceeded">Cannot upload %1$s: this account has only %2$s remaining.</string>
+    <string name="upload_size_unavailable">Unable to determine the size of the selected content.</string>
+    <string name="owned_folder_delete_message">This folder belongs to or contains folders assigned to: %1$s. Are you sure you want to delete it?</string>
 </resources>
