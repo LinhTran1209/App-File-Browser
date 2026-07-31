@@ -47,14 +47,18 @@ class TransferCoordinator(
 
     /** Creates every remote directory before its child files are queued, with one durable task per file. */
     suspend fun enqueueFolder(treeUri: Uri, remotePath: String) = withContext(Dispatchers.IO) {
-        val root = DocumentFile.fromTreeUri(context, treeUri) ?: throw IOException("Unable to access selected folder")
-        require(root.isDirectory) { "Selected item is not a folder" }
-        ensureUploadPermission(requiresCreate = true)
-        val rootPath = BrowserPath.child(remotePath, root.name ?: "folder")
-        sessionRepository.createDirectory(profile, rootPath).getOrThrow()
-        val files = mutableListOf<Pair<DocumentFile, String>>()
-        createDirectoryPlan(root, rootPath, files)
-        files.forEach { (child, parent) -> enqueuePlannedFile(child, parent) }
+        // Directory creation is a server mutation too. Keep it in the same single-upload
+        // lane so selecting another folder cannot interrupt a file body already in flight.
+        uploadSemaphore.withPermit {
+            val root = DocumentFile.fromTreeUri(context, treeUri) ?: throw IOException("Unable to access selected folder")
+            require(root.isDirectory) { "Selected item is not a folder" }
+            ensureUploadPermission(requiresCreate = true)
+            val rootPath = BrowserPath.child(remotePath, root.name ?: "folder")
+            sessionRepository.createDirectory(profile, rootPath).getOrThrow()
+            val files = mutableListOf<Pair<DocumentFile, String>>()
+            createDirectoryPlan(root, rootPath, files)
+            files.forEach { (child, parent) -> enqueuePlannedFile(child, parent) }
+        }
     }
 
     suspend fun hasDownloadConflict(treeUri: Uri, name: String): Boolean = withContext(Dispatchers.IO) {
@@ -76,6 +80,36 @@ class TransferCoordinator(
             DownloadConflict.Cancel -> error("handled above")
         }
         val task = transferStore.enqueue(finalName, BrowserPath.normalize(remotePath), TransferDirection.Download, totalBytes, treeUri.toString(), profile.id)
+        startDownload(task)
+        task
+    }
+
+    suspend fun enqueueArchiveDownload(
+        remotePaths: List<String>,
+        name: String,
+        totalBytes: Long,
+        treeUri: Uri,
+        algorithm: String,
+        conflict: DownloadConflict,
+    ): TransferTask? = withContext(Dispatchers.IO) {
+        require(remotePaths.isNotEmpty()) { "At least one item is required" }
+        if (conflict == DownloadConflict.Cancel) return@withContext null
+        val root = destinationRoot(treeUri)
+        val finalName = when (conflict) {
+            DownloadConflict.Replace -> name
+            DownloadConflict.KeepBoth -> uniqueName(root, name)
+            DownloadConflict.Cancel -> error("handled above")
+        }
+        val task = transferStore.enqueue(
+            name = finalName,
+            path = BrowserPath.normalize(remotePaths.first()),
+            direction = TransferDirection.Download,
+            totalBytes = totalBytes,
+            sourceUri = treeUri.toString(),
+            profileId = profile.id,
+            archivePaths = remotePaths.map(BrowserPath::normalize),
+            archiveAlgorithm = algorithm,
+        )
         startDownload(task)
         task
     }
@@ -159,13 +193,19 @@ class TransferCoordinator(
                 val root = destinationRoot(task.sourceUri?.let(Uri::parse) ?: throw IOException("Download destination is unavailable"))
                 part = root.createFile("application/octet-stream", ".${task.name}.part")
                     ?: throw IOException("Unable to create temporary download")
-                sessionRepository.downloadTo(profile, task.path, {
+                val openPart = {
                     context.contentResolver.openOutputStream(part.uri, "w") ?: throw IOException("Unable to write temporary download")
-                }) { copied, total ->
+                }
+                val progress: (Long, Long) -> Unit = { copied, total ->
                     val reportedTotal = total.takeIf { it > 0 } ?: latest.totalBytes
                     val safeTotal = maxOf(reportedTotal, copied)
                     latest = transferStore.save(latest.copy(totalBytes = safeTotal, transferredBytes = copied))
-                }.getOrThrow()
+                }
+                if (task.archivePaths.isNotEmpty() && task.archiveAlgorithm != null) {
+                    sessionRepository.downloadArchiveTo(profile, task.archivePaths, task.archiveAlgorithm, openPart, progress).getOrThrow()
+                } else {
+                    sessionRepository.downloadTo(profile, task.path, openPart, progress).getOrThrow()
+                }
                 // Preserve the old file until staging has succeeded. Rename it aside so a finalization failure can restore it.
                 val backupName = ".${task.name}.${task.id}.${UUID.randomUUID()}.backup"
                 val existing = root.findFile(task.name)

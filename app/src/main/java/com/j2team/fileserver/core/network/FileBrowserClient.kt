@@ -112,6 +112,28 @@ class FileBrowserClient {
         remotePath: String,
         openDestination: () -> OutputStream,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): ApiResult<Unit> {
+        require(remotePath.isNotBlank()) { "Remote path is required" }
+        return streamDownloadToResult(rawUrl(profile, remotePath), token, openDestination, onProgress)
+    }
+
+    suspend fun downloadArchiveToResult(
+        profile: ServerProfile,
+        token: String? = null,
+        remotePaths: List<String>,
+        algorithm: String,
+        openDestination: () -> OutputStream,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): ApiResult<Unit> {
+        require(remotePaths.isNotEmpty()) { "At least one remote path is required" }
+        return streamDownloadToResult(archiveUrl(profile, remotePaths, algorithm), token, openDestination, onProgress)
+    }
+
+    private suspend fun streamDownloadToResult(
+        url: String,
+        token: String?,
+        openDestination: () -> OutputStream,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)?,
     ): ApiResult<Unit> = suspendCancellableCoroutine { continuation ->
         val activeConnection = AtomicReference<HttpURLConnection?>(null)
         val activeInput = AtomicReference<InputStream?>(null)
@@ -134,8 +156,7 @@ class FileBrowserClient {
         Dispatchers.IO.dispatch(EmptyCoroutineContext, Runnable {
             val result = try {
                 if (requestOwner.isCancelled()) return@Runnable
-                require(remotePath.isNotBlank()) { "Remote path is required" }
-                val connection = open(rawUrl(profile, remotePath), "GET")
+                val connection = open(url, "GET")
                 activeConnection.set(connection)
                 if (!requestOwner.publish(closeActiveRequest)) return@Runnable
                 if (requestOwner.isCancelled()) return@Runnable
@@ -518,6 +539,17 @@ class FileBrowserClient {
 
     fun rawUrl(profile: ServerProfile, remotePath: String): String =
         apiUrl(profile, "/api/raw", remotePath)
+
+    fun archiveUrl(profile: ServerProfile, remotePaths: List<String>, algorithm: String): String {
+        val supported = setOf("zip", "tar", "targz", "tarbz2", "tarxz", "tarlz4", "tarsz", "tarbr", "tarzst")
+        require(algorithm in supported) { "Unsupported archive format" }
+        require(remotePaths.isNotEmpty()) { "At least one remote path is required" }
+        // File Browser treats a single directory as the raw resource itself. Sending it
+        // through the bulk `files` query can produce a valid but empty archive.
+        if (remotePaths.size == 1) return rawUrl(profile, remotePaths.single()) + "?algo=$algorithm"
+        val files = URLEncoder.encode(remotePaths.joinToString(","), Charsets.UTF_8.name())
+        return profile.endpoint.trimEnd('/') + "/api/raw/?files=$files&algo=$algorithm"
+    }
 
     fun readText(
         profile: ServerProfile,

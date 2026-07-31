@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -45,6 +46,7 @@ fun TransfersScreen(store: TransferStore, coordinator: TransferCoordinator?, onB
     val tasks by store.tasks.collectAsState()
     var tab by remember { mutableStateOf(TransferTab.Downloads) }
     val visible = tasks.forTab(tab)
+    BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize()) {
         AppBar(stringResource(R.string.transfers), onBack)
         PrimaryTabRow(selectedTabIndex = tab.ordinal) {

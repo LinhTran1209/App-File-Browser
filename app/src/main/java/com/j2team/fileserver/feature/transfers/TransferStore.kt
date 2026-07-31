@@ -27,8 +27,28 @@ class TransferStore(context: Context, preferencesName: String = "transfer_queue"
         return recovered.sortedByDescending { it.updatedAt }
     }
 
-    fun enqueue(name: String, path: String, direction: TransferDirection, totalBytes: Long = 0L, sourceUri: String? = null, profileId: String? = null): TransferTask =
-        save(TransferTask(UUID.randomUUID().toString(), name, path, direction, sourceUri, profileId, totalBytes = totalBytes))
+    fun enqueue(
+        name: String,
+        path: String,
+        direction: TransferDirection,
+        totalBytes: Long = 0L,
+        sourceUri: String? = null,
+        profileId: String? = null,
+        archivePaths: List<String> = emptyList(),
+        archiveAlgorithm: String? = null,
+    ): TransferTask = save(
+        TransferTask(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            path = path,
+            direction = direction,
+            sourceUri = sourceUri,
+            profileId = profileId,
+            totalBytes = totalBytes,
+            archivePaths = archivePaths,
+            archiveAlgorithm = archiveAlgorithm,
+        ),
+    )
 
     @Synchronized
     fun save(task: TransferTask): TransferTask {
@@ -69,11 +89,31 @@ class TransferStore(context: Context, preferencesName: String = "transfer_queue"
         put("id", t.id); put("name", t.name); put("path", t.path); put("direction", t.direction.name)
         put("sourceUri", t.sourceUri)
         put("profileId", t.profileId)
+        put("archivePaths", JSONArray().apply { t.archivePaths.forEach(::put) })
+        put("archiveAlgorithm", t.archiveAlgorithm)
         put("total", t.totalBytes); put("transferred", t.transferredBytes); put("state", t.state.name)
         put("error", t.error); put("created", t.createdAt); put("updated", t.updatedAt)
     }
     private fun persist(items: List<TransferTask>) { prefs.edit().putString("items", JSONArray().apply { items.forEach { put(toJson(it)) } }.toString()).apply() }
-    private fun fromJson(o: JSONObject) = TransferTask(o.getString("id"), o.getString("name"), o.getString("path"),
-        TransferDirection.valueOf(o.getString("direction")), o.optString("sourceUri").ifBlank { null }, o.optString("profileId").ifBlank { null }, o.optLong("total"), o.optLong("transferred"),
-        runCatching { TransferState.valueOf(o.getString("state")) }.getOrDefault(TransferState.Queued), o.optString("error").ifBlank { null }, o.optLong("created"), o.optLong("updated"))
+    private fun fromJson(o: JSONObject): TransferTask {
+        val archivePaths = o.optJSONArray("archivePaths")?.let { array ->
+            (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf(String::isNotBlank) }
+        }.orEmpty()
+        return TransferTask(
+            id = o.getString("id"),
+            name = o.getString("name"),
+            path = o.getString("path"),
+            direction = TransferDirection.valueOf(o.getString("direction")),
+            sourceUri = o.optString("sourceUri").ifBlank { null },
+            profileId = o.optString("profileId").ifBlank { null },
+            totalBytes = o.optLong("total"),
+            transferredBytes = o.optLong("transferred"),
+            state = runCatching { TransferState.valueOf(o.getString("state")) }.getOrDefault(TransferState.Queued),
+            error = o.optString("error").ifBlank { null },
+            createdAt = o.optLong("created"),
+            updatedAt = o.optLong("updated"),
+            archivePaths = archivePaths,
+            archiveAlgorithm = o.optString("archiveAlgorithm").ifBlank { null },
+        )
+    }
 }

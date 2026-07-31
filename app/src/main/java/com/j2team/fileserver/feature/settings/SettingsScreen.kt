@@ -2,6 +2,9 @@ package com.j2team.fileserver.feature.settings
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.compose.foundation.layout.*
@@ -56,12 +59,13 @@ internal fun SettingsScreen(
         }
     }
     val launchDirectoryPicker = directoryPicker(onDirectorySelection)
+    BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize()) {
         SettingsAppBar(onBack)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
         Card(Modifier.fillMaxWidth().padding(16.dp).height(96.dp), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
             Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(painterResource(AppIcons.Settings), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+                Icon(painterResource(folderIcon(settings.folderIconSet)), null, Modifier.size(48.dp), tint = androidx.compose.ui.graphics.Color.Unspecified)
                 Spacer(Modifier.width(12.dp))
                 Column { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium); Text(stringResource(R.string.app_version, BuildConfig.VERSION_NAME), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
@@ -72,7 +76,7 @@ internal fun SettingsScreen(
         }
         SettingsLabel(R.string.download_directory)
         Button(onClick = launchDirectoryPicker, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(48.dp), contentPadding = PaddingValues(horizontal = 16.dp)) {
-            Icon(painterResource(AppIcons.Download), null); Spacer(Modifier.width(8.dp)); Text(settings.downloadTreeUri ?: stringResource(R.string.choose_download_directory), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(painterResource(AppIcons.Download), null); Spacer(Modifier.width(8.dp)); Text(displayTreePath(settings.downloadTreeUri) ?: stringResource(R.string.choose_download_directory), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         directoryError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         SettingsLabel(R.string.folder_icons)
@@ -100,6 +104,20 @@ internal fun SettingsScreen(
 @Composable private fun SettingsLabel(resource: Int) = Text(stringResource(resource), fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 private fun folderIcon(set: FolderIconSet): Int = when (set) { FolderIconSet.Classic -> AppIcons.FolderClassic; FolderIconSet.Color -> AppIcons.FolderColor; FolderIconSet.Outline -> AppIcons.FolderOutline }
 private fun folderIconLabel(set: FolderIconSet): Int = when (set) { FolderIconSet.Classic -> R.string.folder_icon_classic; FolderIconSet.Color -> R.string.folder_icon_color; FolderIconSet.Outline -> R.string.folder_icon_outline }
+
+internal fun displayTreePath(uriString: String?): String? {
+    val uri = uriString?.let { runCatching { Uri.parse(it) }.getOrNull() } ?: return null
+    val documentId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
+        ?: return uri.lastPathSegment?.let { "/${Uri.decode(it).trimStart('/')}" }
+    val parts = documentId.split(':', limit = 2)
+    val relative = parts.getOrNull(1).orEmpty().trim('/')
+    return when (parts.firstOrNull()?.lowercase()) {
+        "raw" -> "/$relative"
+        "primary" -> "/storage/emulated/0" + relative.takeIf(String::isNotEmpty)?.let { "/$it" }.orEmpty()
+        "home" -> "/home" + relative.takeIf(String::isNotEmpty)?.let { "/$it" }.orEmpty()
+        else -> "/" + documentId.replace(':', '/').trimStart('/')
+    }
+}
 
 internal data class TreeSelection(val uri: android.net.Uri, val grantFlags: Int)
 

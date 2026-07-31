@@ -21,6 +21,10 @@ data class TransferTask(
     val error: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt,
+    /** Multiple remote paths are downloaded as one server-generated archive. */
+    val archivePaths: List<String> = emptyList(),
+    /** File Browser API algorithm key, for example targz or tarzst. */
+    val archiveAlgorithm: String? = null,
 ) {
     val progress: Float
         get() = if (totalBytes <= 0L) 0f else (transferredBytes.toFloat() / totalBytes).coerceIn(0f, 1f)

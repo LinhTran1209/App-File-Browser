@@ -91,6 +91,16 @@ class SessionRepository(
         transport.downloadToResult(profile, token, remotePath, openDestination, onProgress)
     }
 
+    suspend fun downloadArchiveTo(
+        profile: ServerProfile,
+        remotePaths: List<String>,
+        algorithm: String,
+        openDestination: () -> OutputStream,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
+    ): Result<Unit> = authenticated(profile) { token ->
+        transport.downloadArchiveToResult(profile, token, remotePaths, algorithm, openDestination, onProgress)
+    }
+
     suspend fun previewProbe(profile: ServerProfile, remotePath: String): Result<PreviewProbe> =
         authenticated(profile) { token -> transport.previewProbeResult(profile, token, remotePath) }
 

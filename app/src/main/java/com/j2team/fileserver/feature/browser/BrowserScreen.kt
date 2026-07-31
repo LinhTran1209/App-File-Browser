@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,6 +42,7 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -105,9 +107,30 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
+import java.text.SimpleDateFormat
+import java.util.Date
 import kotlin.math.ln
 import kotlin.math.pow
 import com.j2team.fileserver.core.cache.AppCacheManager
+
+private data class ArchiveFormat(val algorithm: String, val extension: String)
+private val archiveFormats = listOf(
+    ArchiveFormat("zip", "zip"),
+    ArchiveFormat("tar", "tar"),
+    ArchiveFormat("targz", "tar.gz"),
+    ArchiveFormat("tarbz2", "tar.bz2"),
+    ArchiveFormat("tarxz", "tar.xz"),
+    ArchiveFormat("tarlz4", "tar.lz4"),
+    ArchiveFormat("tarsz", "tar.sz"),
+    ArchiveFormat("tarbr", "tar.br"),
+    ArchiveFormat("tarzst", "tar.zst"),
+)
+
+private data class PendingArchiveDownload(
+    val items: List<RemoteResource>,
+    val format: ArchiveFormat,
+    val name: String,
+)
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -117,6 +140,8 @@ fun BrowserScreen(
     transferStore: TransferStore,
     transferCoordinator: TransferCoordinator?,
     sessionRepository: SessionRepository,
+    initialPath: String,
+    onPathChanged: (String) -> Unit,
     onBack: () -> Unit,
     onTransfers: () -> Unit,
     onServerSettings: () -> Unit,
@@ -125,7 +150,7 @@ fun BrowserScreen(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
-    var path by remember(profile) { mutableStateOf(profile?.basePath ?: "/") }
+    var path by remember(profile) { mutableStateOf(BrowserPath.normalize(initialPath)) }
     var resources by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var directoryPermissions by remember { mutableStateOf(ResourcePermissions()) }
     var selectedPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -141,6 +166,11 @@ fun BrowserScreen(
     var mutating by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<RemoteResource?>(null) }
     var pendingDownload by remember { mutableStateOf<RemoteResource?>(null) }
+    var pendingArchiveDownload by remember { mutableStateOf<PendingArchiveDownload?>(null) }
+    var archiveItems by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
+    var archiveDialogOpen by remember { mutableStateOf(false) }
+    var pendingFolderUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var folderBatchDialogOpen by remember { mutableStateOf(false) }
     var moveDialogOpen by remember { mutableStateOf(false) }
     var moveDestination by remember(path) { mutableStateOf(path) }
     var moveDirectories by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
@@ -196,6 +226,7 @@ fun BrowserScreen(
         }
     }
     LaunchedEffect(profile, path) { refresh() }
+    LaunchedEffect(path) { onPathChanged(BrowserPath.normalize(path)) }
     LaunchedEffect(path, pathScrollState.maxValue) {
         pathScrollState.scrollTo(pathScrollState.maxValue)
     }
@@ -239,7 +270,8 @@ fun BrowserScreen(
         return true
     }
 
-    fun uploadFile(uri: Uri) {
+    fun uploadFiles(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         if (!directoryPermissions.canUpload) {
             mutationError = notPermittedMessage
             return
@@ -247,32 +279,56 @@ fun BrowserScreen(
         scope.launch {
             runCatching {
                 val metadata = withContext(Dispatchers.IO) {
-                    displayName(context.contentResolver, uri).orEmpty().ifBlank { "upload.bin" } to
-                        selectedDocumentSize(context.contentResolver, uri)
+                    uris.map { uri ->
+                        displayName(context.contentResolver, uri).orEmpty().ifBlank { "upload.bin" } to
+                            selectedDocumentSize(context.contentResolver, uri)
+                    }
                 }
-                if (!uploadFits(metadata.second, metadata.first)) return@launch
-                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                transferCoordinator?.enqueueFile(uri, path) ?: error("No active server")
+                val totalBytes = metadata.takeIf { entries -> entries.all { (it.second ?: -1L) >= 0L } }
+                    ?.fold(0L) { total, item -> Math.addExact(total, item.second!!) }
+                val label = if (metadata.size == 1) metadata.first().first else "${metadata.size} files"
+                if (!uploadFits(totalBytes, label)) return@launch
+                val coordinator = transferCoordinator ?: error("No active server")
+                uris.forEach { uri ->
+                    context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    coordinator.enqueueFile(uri, path)
+                }
             }.onFailure { mutationError = it.message ?: it.toString() }
         }
     }
 
-    val uploadFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null && directoryPermissions.canUpload) uploadFile(uri)
-        else if (uri != null) mutationError = notPermittedMessage
+    val uploadFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty() && directoryPermissions.canUpload) uploadFiles(uris)
+        else if (uris.isNotEmpty()) mutationError = notPermittedMessage
     }
     val uploadFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null && directoryPermissions.canUpload && directoryPermissions.canCreate) scope.launch {
+        if (uri != null && directoryPermissions.canUpload && directoryPermissions.canCreate) {
+            if (uri !in pendingFolderUris) pendingFolderUris = pendingFolderUris + uri
+            folderBatchDialogOpen = true
+        } else if (uri != null) mutationError = notPermittedMessage
+    }
+
+    fun uploadFolders(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        scope.launch {
             runCatching {
                 val metadata = withContext(Dispatchers.IO) {
-                    val root = DocumentFile.fromTreeUri(context, uri) ?: error(uploadSizeUnavailable)
-                    (root.name ?: "folder") to selectedTreeSize(context.contentResolver, root)
+                    uris.map { uri ->
+                        val root = DocumentFile.fromTreeUri(context, uri) ?: error(uploadSizeUnavailable)
+                        (root.name ?: "folder") to selectedTreeSize(context.contentResolver, root)
+                    }
                 }
-                if (!uploadFits(metadata.second, metadata.first)) return@launch
-                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                transferCoordinator?.enqueueFolder(uri, path) ?: error("No active server")
+                val totalBytes = metadata.takeIf { entries -> entries.all { (it.second ?: -1L) >= 0L } }
+                    ?.fold(0L) { total, item -> Math.addExact(total, item.second!!) }
+                val label = if (metadata.size == 1) metadata.first().first else "${metadata.size} folders"
+                if (!uploadFits(totalBytes, label)) return@launch
+                val coordinator = transferCoordinator ?: error("No active server")
+                uris.forEach { uri ->
+                    context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    coordinator.enqueueFolder(uri, path)
+                }
             }.onSuccess { refresh() }.onFailure { mutationError = it.message ?: it.toString() }
-        } else if (uri != null) mutationError = notPermittedMessage
+        }
     }
 
     val selected = resources.filter { it.path in selectedPaths }
@@ -297,6 +353,51 @@ fun BrowserScreen(
             runCatching { transferCoordinator?.enqueueDownload(item.path, item.name, item.size, treeUri, conflict) }
                 .onFailure { downloadError = it.message ?: unavailableDirectory }
         }
+    }
+
+    fun archiveName(items: List<RemoteResource>, format: ArchiveFormat): String {
+        val stem = if (items.size == 1 && items.first().isDirectory) {
+            items.first().name
+        } else {
+            "download-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}"
+        }
+        return "$stem.${format.extension}"
+    }
+
+    fun enqueueArchive(
+        items: List<RemoteResource>,
+        format: ArchiveFormat,
+        conflict: DownloadConflict = DownloadConflict.Replace,
+        requestedName: String? = null,
+        checkExisting: Boolean = true,
+    ) {
+        val treeUri = settings.downloadTreeUri?.let(Uri::parse)
+        val coordinator = transferCoordinator
+        if (treeUri == null || coordinator == null) { downloadError = unavailableDirectory; return }
+        val requestName = requestedName ?: archiveName(items, format)
+        scope.launch {
+            runCatching {
+                if (checkExisting && conflict == DownloadConflict.Replace && coordinator.hasDownloadConflict(treeUri, requestName)) {
+                    pendingArchiveDownload = PendingArchiveDownload(items, format, requestName)
+                } else {
+                    coordinator.enqueueArchiveDownload(
+                        remotePaths = items.map { it.path },
+                        name = requestName,
+                        totalBytes = items.sumOf { it.size.coerceAtLeast(0L) },
+                        treeUri = treeUri,
+                        algorithm = format.algorithm,
+                        conflict = conflict,
+                    )
+                    selectedPaths = emptySet()
+                }
+            }.onFailure { downloadError = it.message ?: unavailableDirectory }
+        }
+    }
+
+    fun resolveArchiveDownload(conflict: DownloadConflict) {
+        val pending = pendingArchiveDownload ?: return
+        pendingArchiveDownload = null
+        if (conflict != DownloadConflict.Cancel) enqueueArchive(pending.items, pending.format, conflict, pending.name, checkExisting = false)
     }
 
     fun openEnteredPath() {
@@ -365,6 +466,53 @@ fun BrowserScreen(
         return
     }
 
+    if (folderBatchDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { folderBatchDialogOpen = false; pendingFolderUris = emptyList() },
+            title = { Text(stringResource(R.string.upload_folders_title)) },
+            text = { Text(stringResource(R.string.folders_selected, pendingFolderUris.size)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val chosen = pendingFolderUris
+                    pendingFolderUris = emptyList()
+                    folderBatchDialogOpen = false
+                    uploadFolders(chosen)
+                }) { Text(stringResource(R.string.upload_selected_folders)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    folderBatchDialogOpen = false
+                    uploadFolderPicker.launch(null)
+                }) { Text(stringResource(R.string.select_another_folder)) }
+            },
+        )
+    }
+
+    if (archiveDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { archiveDialogOpen = false; archiveItems = emptyList() },
+            title = { Text(stringResource(R.string.archive_download_title)) },
+            text = {
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.archive_download_message))
+                    archiveFormats.forEach { format ->
+                        Button(
+                            onClick = {
+                                val chosen = archiveItems
+                                archiveItems = emptyList()
+                                archiveDialogOpen = false
+                                enqueueArchive(chosen, format)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(format.extension) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { archiveDialogOpen = false; archiveItems = emptyList() }) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
+
     if (pathDialogOpen) {
         AlertDialog(
             onDismissRequest = { if (!pathResolving) pathDialogOpen = false },
@@ -418,16 +566,25 @@ fun BrowserScreen(
         )
     }
 
-    pendingDownload?.let { item ->
+    val conflictingName = pendingDownload?.name ?: pendingArchiveDownload?.name
+    if (conflictingName != null) {
         AlertDialog(
-            onDismissRequest = { resolveDownload(DownloadConflict.Cancel) },
+            onDismissRequest = {
+                if (pendingDownload != null) resolveDownload(DownloadConflict.Cancel) else resolveArchiveDownload(DownloadConflict.Cancel)
+            },
             title = { Text("File already exists") },
-            text = { Text("Choose how to save ${item.name}.") },
-            confirmButton = { TextButton(onClick = { resolveDownload(DownloadConflict.Replace) }) { Text("Replace") } },
+            text = { Text("Choose how to save $conflictingName.") },
+            confirmButton = { TextButton(onClick = {
+                if (pendingDownload != null) resolveDownload(DownloadConflict.Replace) else resolveArchiveDownload(DownloadConflict.Replace)
+            }) { Text("Replace") } },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { resolveDownload(DownloadConflict.KeepBoth) }) { Text("Keep both") }
-                    TextButton(onClick = { resolveDownload(DownloadConflict.Cancel) }) { Text(stringResource(R.string.cancel)) }
+                    TextButton(onClick = {
+                        if (pendingDownload != null) resolveDownload(DownloadConflict.KeepBoth) else resolveArchiveDownload(DownloadConflict.KeepBoth)
+                    }) { Text("Keep both") }
+                    TextButton(onClick = {
+                        if (pendingDownload != null) resolveDownload(DownloadConflict.Cancel) else resolveArchiveDownload(DownloadConflict.Cancel)
+                    }) { Text(stringResource(R.string.cancel)) }
                 }
             },
         )
@@ -641,7 +798,14 @@ fun BrowserScreen(
                 }, modifier = Modifier.size(48.dp)) {
                     Icon(painterResource(AppIcons.Edit), stringResource(R.string.rename))
                 }
-                if (actions.canDownload) IconButton(onClick = { selected.forEach(::download) }, modifier = Modifier.size(48.dp)) {
+                if (actions.canDownload) IconButton(onClick = {
+                    if (selected.size == 1 && !selected.first().isDirectory) {
+                        download(selected.first())
+                    } else {
+                        archiveItems = selected.toList()
+                        archiveDialogOpen = true
+                    }
+                }, modifier = Modifier.size(48.dp)) {
                     Icon(painterResource(AppIcons.Download), stringResource(R.string.download))
                 }
                 if (actions.canShare) IconButton(onClick = { openShareDialog(selected.single()) }, modifier = Modifier.size(48.dp)) {

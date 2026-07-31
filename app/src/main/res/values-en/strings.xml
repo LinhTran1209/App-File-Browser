@@ -168,4 +168,10 @@
     <string name="upload_quota_exceeded">Cannot upload %1$s: this account has only %2$s remaining.</string>
     <string name="upload_size_unavailable">Unable to determine the size of the selected content.</string>
     <string name="owned_folder_delete_message">This folder belongs to or contains folders assigned to: %1$s. Are you sure you want to delete it?</string>
+    <string name="upload_folders_title">Upload multiple folders</string>
+    <string name="folders_selected">%1$d folders selected.</string>
+    <string name="upload_selected_folders">Upload selected folders</string>
+    <string name="select_another_folder">Select another folder</string>
+    <string name="archive_download_title">Download files</string>
+    <string name="archive_download_message">Choose the format you want to download.</string>
 </resources>

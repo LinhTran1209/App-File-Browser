@@ -129,6 +129,8 @@ private fun FileServerApp(
         val screen = Screen.valueOf(screenName)
         var profiles by remember { mutableStateOf(serverStore.all()) }
         var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+        var browserPath by rememberSaveable { mutableStateOf("/") }
+        var transfersReturnScreenName by rememberSaveable { mutableStateOf(Screen.Servers.name) }
         val selected = profiles.firstOrNull { it.id == selectedId }
         var connectionError by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
@@ -145,6 +147,7 @@ private fun FileServerApp(
                 when (screen) {
                 Screen.Servers -> ServersScreen(
                     profiles = profiles,
+                    folderIconSet = settings.folderIconSet,
                     sessionRepository = sessionRepository,
                     onAdd = { screenName = Screen.AddServer.name },
                     error = connectionError,
@@ -154,6 +157,7 @@ private fun FileServerApp(
                             val result = withContext(Dispatchers.IO) { sessionRepository.open(profile) }
                             result.onSuccess {
                                 selectedId = it.profile.id
+                                browserPath = BrowserPath.normalize(it.profile.basePath)
                                 screenName = Screen.Browser.name
                             }.onFailure {
                                 if (it is LoginRequiredException) {
@@ -186,7 +190,10 @@ private fun FileServerApp(
                     profile = selected,
                     sessionRepository = sessionRepository,
                     onBack = { screenName = Screen.Servers.name },
-                    onConnected = { screenName = Screen.Browser.name },
+                    onConnected = {
+                        browserPath = BrowserPath.normalize(selected?.basePath ?: "/")
+                        screenName = Screen.Browser.name
+                    },
                 )
                 Screen.Browser -> BrowserScreen(
                     profile = selected,
@@ -194,11 +201,18 @@ private fun FileServerApp(
                     transferStore = transferStore,
                     transferCoordinator = transferCoordinator,
                     sessionRepository = sessionRepository,
+                    initialPath = browserPath,
+                    onPathChanged = { browserPath = it },
                     onBack = { screenName = Screen.Servers.name },
-                    onTransfers = { screenName = Screen.Transfers.name },
+                    onTransfers = {
+                        transfersReturnScreenName = Screen.Browser.name
+                        screenName = Screen.Transfers.name
+                    },
                     onServerSettings = { screenName = Screen.ServerSettings.name },
                 )
-                Screen.Transfers -> TransfersScreen(transferStore, transferCoordinator) { screenName = Screen.Browser.name }
+                Screen.Transfers -> TransfersScreen(transferStore, transferCoordinator) {
+                    screenName = transfersReturnScreenName
+                }
                 Screen.ServerSettings -> ServerSettingsScreen(
                     profile = selected,
                     repository = sessionRepository,
@@ -207,7 +221,10 @@ private fun FileServerApp(
                 Screen.Settings -> SettingsScreen(
                     settings = settings,
                     onBack = { screenName = Screen.Servers.name },
-                    onTransfers = { screenName = Screen.Transfers.name },
+                    onTransfers = {
+                        transfersReturnScreenName = Screen.Settings.name
+                        screenName = Screen.Transfers.name
+                    },
                     onChanged = { updated ->
                         val languageChanged = settings.language != updated.language
                         settings = updated
@@ -248,6 +265,7 @@ internal fun AppBar(
 @Composable
 private fun ServersScreen(
     profiles: List<ServerProfile>,
+    folderIconSet: FolderIconSet,
     sessionRepository: SessionRepository,
     error: String?,
     onAdd: () -> Unit,
@@ -257,7 +275,7 @@ private fun ServersScreen(
 ) {
     Column(Modifier.fillMaxSize()) {
         AppBar(stringResource(R.string.app_name), leading = {
-            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(40.dp))
+            Image(painterResource(folderIconResource(folderIconSet)), contentDescription = null, modifier = Modifier.size(40.dp))
             Spacer(Modifier.width(10.dp))
         }, action = {
             IconButton(onClick = onSettings, modifier = Modifier.size(48.dp)) {
@@ -276,7 +294,7 @@ private fun ServersScreen(
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Image(
-                            painterResource(R.drawable.server_icon),
+                            painterResource(folderIconResource(folderIconSet)),
                             contentDescription = null,
                             modifier = Modifier.size(72.dp),
                             alpha = 0.72f,
@@ -292,7 +310,7 @@ private fun ServersScreen(
             } else {
                 LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(profiles, key = { it.id }) { profile ->
-                        ServerCard(profile, sessionRepository, { onOpen(profile) }, { onDelete(profile) })
+                        ServerCard(profile, folderIconSet, sessionRepository, { onOpen(profile) }, { onDelete(profile) })
                     }
                 }
             }
@@ -312,7 +330,7 @@ private fun ServersScreen(
 }
 
 @Composable
-private fun ServerCard(profile: ServerProfile, sessionRepository: SessionRepository, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun ServerCard(profile: ServerProfile, folderIconSet: FolderIconSet, sessionRepository: SessionRepository, onClick: () -> Unit, onDelete: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     var online by remember(profile.endpoint) { mutableStateOf(false) }
     LaunchedEffect(profile.endpoint) {
@@ -326,7 +344,7 @@ private fun ServerCard(profile: ServerProfile, sessionRepository: SessionReposit
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Row(Modifier.fillMaxSize().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(painterResource(R.drawable.server_icon), contentDescription = null, modifier = Modifier.size(48.dp))
+            Image(painterResource(folderIconResource(folderIconSet)), contentDescription = null, modifier = Modifier.size(48.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(profile.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)

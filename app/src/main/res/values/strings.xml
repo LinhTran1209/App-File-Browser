@@ -168,4 +168,10 @@
     <string name="upload_quota_exceeded">Không thể tải lên %1$s: tài khoản chỉ còn %2$s.</string>
     <string name="upload_size_unavailable">Không thể xác định dung lượng của nội dung đã chọn.</string>
     <string name="owned_folder_delete_message">Thư mục này thuộc về hoặc chứa thư mục của người dùng: %1$s. Bạn có chắc chắn muốn xóa không?</string>
+    <string name="upload_folders_title">Tải nhiều thư mục lên</string>
+    <string name="folders_selected">Đã chọn %1$d thư mục.</string>
+    <string name="upload_selected_folders">Tải các thư mục đã chọn</string>
+    <string name="select_another_folder">Chọn thêm thư mục</string>
+    <string name="archive_download_title">Tải xuống tệp</string>
+    <string name="archive_download_message">Chọn định dạng bạn muốn tải xuống.</string>
 </resources>
