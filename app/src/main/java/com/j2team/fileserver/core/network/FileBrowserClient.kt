@@ -11,6 +11,10 @@ import com.j2team.fileserver.core.model.ServerGlobalSettings
 import com.j2team.fileserver.core.model.ServerUser
 import com.j2team.fileserver.core.model.AdminDirectoryListing
 import com.j2team.fileserver.core.session.ApiResult
+import com.j2team.fileserver.feature.sync.RemoteChange
+import com.j2team.fileserver.feature.sync.RemoteChangePage
+import com.j2team.fileserver.feature.sync.SyncEntry
+import com.j2team.fileserver.feature.sync.ServerAccountIdentity
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -23,6 +27,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.Base64
+import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.EmptyCoroutineContext
@@ -74,7 +79,7 @@ class FileBrowserClient {
     ): ApiResult<File> = try {
         require(remotePath.isNotBlank()) { "Remote path is required" }
         val connection = open(rawUrl(profile, remotePath), "GET")
-        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        applyAuthorization(connection, token)
         val code = connection.responseCode
         if (code !in 200..299) return ApiResult(code, error = IOException("Download failed ($code)"))
 
@@ -160,7 +165,7 @@ class FileBrowserClient {
                 activeConnection.set(connection)
                 if (!requestOwner.publish(closeActiveRequest)) return@Runnable
                 if (requestOwner.isCancelled()) return@Runnable
-                if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+                applyAuthorization(connection, token)
                 val code = connection.responseCode
                 if (code !in 200..299) ApiResult(code, error = IOException("Download failed ($code)")) else {
                     val total = connection.contentLengthLong
@@ -236,7 +241,7 @@ class FileBrowserClient {
             readTimeout = 60_000
             setRequestProperty("Content-Type", "application/octet-stream")
             setRequestProperty("Accept", "application/json")
-            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            applyAuthorization(this, token)
         }
         val total = file.length()
         connection.setFixedLengthStreamingMode(total)
@@ -266,7 +271,7 @@ class FileBrowserClient {
         val directoryPath = path.trimEnd('/') + "/"
         val connection = open(apiUrl(profile, "/api/resources", directoryPath), "POST").apply {
             setRequestProperty("Accept", "application/json")
-            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            applyAuthorization(this, token)
         }
         val code = connection.responseCode
         require(code in 200..299) { requestError("Unable to create folder", code, connection) }
@@ -279,7 +284,7 @@ class FileBrowserClient {
             require(path.isNotBlank() && path != "/") { "Resource path is required" }
             val connection = open(apiUrl(profile, "/api/resources", path), "DELETE").apply {
                 setRequestProperty("Accept", "application/json")
-                if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+                applyAuthorization(this, token)
             }
             val code = connection.responseCode
             require(code in 200..299) { requestError("Unable to delete resource", code, connection) }
@@ -326,7 +331,7 @@ class FileBrowserClient {
             "?action=rename&destination=$encodedDestination&override=false&rename=false"
         val connection = open(url, "PATCH").apply {
             setRequestProperty("Accept", "application/json")
-            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            applyAuthorization(this, token)
         }
         val code = connection.responseCode
         require(code in 200..299) { requestError("Unable to rename resource", code, connection) }
@@ -377,9 +382,85 @@ class FileBrowserClient {
     fun listResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<List<RemoteResource>> =
         listWithPermissionsResult(profile, token, path).map { it.resources }
 
+    fun recursiveListResult(profile: ServerProfile, token: String?, rootPath: String): ApiResult<Map<String, SyncEntry>> = try {
+        val root = "/" + rootPath.trim('/')
+        val connection = open(apiUrl(profile, "/api/resources/recursive", root), "GET")
+        applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to scan sync folder", code, connection)))
+        val array = JSONArray(connection.inputStream.bufferedReader().use { it.readText() })
+        val prefix = root.trimEnd('/') + "/"
+        ApiResult(code, buildMap {
+            for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                val absolute = item.optString("path")
+                val relative = absolute.removePrefix(prefix).trim('/')
+                if (relative.isEmpty()) continue
+                put(relative, SyncEntry(
+                    relativePath = relative,
+                    directory = item.optBoolean("isDir"),
+                    size = item.optLong("size"),
+                    modified = parseTimeMillis(item.opt("modified")),
+                ))
+            }
+        })
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun syncChangesResult(
+        profile: ServerProfile,
+        token: String?,
+        rootPath: String,
+        cursor: Long,
+        waitSeconds: Int = 0,
+        bootstrap: Boolean = false,
+    ): ApiResult<RemoteChangePage> = try {
+        val encodedPath = URLEncoder.encode("/" + rootPath.trim('/'), Charsets.UTF_8.name()).replace("+", "%20")
+        val url = profile.endpoint.trimEnd('/') + "/api/sync/changes?cursor=${cursor.coerceAtLeast(0)}&path=$encodedPath&limit=500&wait=${waitSeconds.coerceIn(0, 30)}&bootstrap=$bootstrap"
+        val connection = open(url, "GET")
+                applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to read sync changes", code, connection)))
+        val body = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        val changes = body.optJSONArray("changes") ?: JSONArray()
+        ApiResult(code, RemoteChangePage(
+            cursor = body.optLong("cursor", cursor),
+            reset = body.optBoolean("reset"),
+            changes = buildList {
+                for (index in 0 until changes.length()) changes.getJSONObject(index).let { item ->
+                    add(RemoteChange(
+                        id = item.optLong("id"), operation = item.optString("operation"), path = item.optString("path"),
+                        destination = item.optString("destination").takeIf(String::isNotBlank),
+                        directory = item.optBoolean("directory"), size = item.optLong("size"), modified = item.optLong("modified"),
+                    ))
+                }
+            },
+        ))
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun syncIdentityResult(profile: ServerProfile, token: String?): ApiResult<ServerAccountIdentity> = try {
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/sync/identity", "GET")
+        applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) ApiResult(code, error = IOException(requestError("Unable to identify server", code, connection)))
+        else {
+            val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            ApiResult(code, ServerAccountIdentity(json.getString("serverId"), json.getLong("userId")))
+        }
+    } catch (error: Throwable) { ApiResult(-1, error = error) }
+
+    private fun parseTimeMillis(value: Any?): Long = when (value) {
+        is Number -> value.toLong()
+        is String -> runCatching { Instant.parse(value).toEpochMilli() }.getOrDefault(0L)
+        else -> 0L
+    }
+
     fun diskUsageResult(profile: ServerProfile, token: String? = null, path: String = "/"): ApiResult<DiskUsage> = try {
         val connection = open(apiUrl(profile, "/api/usage", path), "GET")
-        if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
+        applyAuthorization(connection, token)
         val code = connection.responseCode
         if (code !in 200..299) return ApiResult(code, error = IOException(requestError("Unable to load disk usage", code, connection)))
         val body = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
@@ -460,7 +541,7 @@ class FileBrowserClient {
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
-            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            applyAuthorization(this, token)
         }
         val payload = JSONObject()
             .put("password", password)
@@ -590,6 +671,35 @@ class FileBrowserClient {
         useCaches = false
         instanceFollowRedirects = false
     }
+
+    private fun applyAuthorization(connection: HttpURLConnection, token: String?) {
+        if (token.isNullOrBlank()) return
+        if (token.startsWith(SYNC_TOKEN_PREFIX)) {
+            connection.setRequestProperty("X-Sync-Token", token.removePrefix(SYNC_TOKEN_PREFIX))
+        } else {
+            connection.setRequestProperty("X-Auth", token)
+        }
+    }
+
+    fun createSyncTokenResult(profile: ServerProfile, token: String?, path: String): ApiResult<String> = try {
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/sync/token", "POST").apply {
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
+            applyAuthorization(this, token)
+        }
+        connection.outputStream.use { output -> output.write(JSONObject().put("path", path).toString().toByteArray()) }
+        val code = connection.responseCode
+        if (code !in 200..299) ApiResult(code, error = IOException(requestError("Unable to authorize background sync", code, connection)))
+        else ApiResult(code, JSONObject(connection.inputStream.bufferedReader().use { it.readText() }).getString("token"))
+    } catch (error: Throwable) { ApiResult(-1, error = error) }
+
+    fun revokeSyncTokenResult(profile: ServerProfile, token: String): ApiResult<Unit> = try {
+        val connection = open(profile.endpoint.trimEnd('/') + "/api/sync/token", "DELETE")
+        applyAuthorization(connection, SYNC_TOKEN_PREFIX + token)
+        val code = connection.responseCode
+        if (code !in 200..299) ApiResult(code, error = IOException("Unable to revoke sync token ($code)")) else ApiResult(code, Unit)
+    } catch (error: Throwable) { ApiResult(-1, error = error) }
 
     private fun apiUrl(profile: ServerProfile, apiPath: String, path: String): String {
         val cleanPath = path.trim().let { if (it.isEmpty() || it == "/") "/" else if (it.startsWith("/")) it else "/$it" }
@@ -829,7 +939,7 @@ class FileBrowserClient {
     ): ApiResult<String> = try {
         val connection = open(profile.endpoint.trimEnd('/') + path, method).apply {
             setRequestProperty("Accept", "application/json")
-            if (!token.isNullOrBlank()) setRequestProperty("X-Auth", token)
+            applyAuthorization(this, token)
             if (actorPassword.isNotBlank()) {
                 setRequestProperty(
                     "X-Password",
@@ -891,6 +1001,7 @@ class FileBrowserClient {
     }
 
     companion object {
+        private const val SYNC_TOKEN_PREFIX = "sync:"
         /** Exposed for tests and callers which need the exact File Browser resources destination. */
         fun encodedResourcePath(path: String): String {
             val cleanPath = path.trim().let { if (it.isEmpty() || it == "/") "/" else if (it.startsWith("/")) it else "/$it" }

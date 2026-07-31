@@ -102,6 +102,9 @@ import com.j2team.fileserver.feature.transfers.DownloadConflict
 import com.j2team.fileserver.feature.transfers.TransferStore
 import com.j2team.fileserver.feature.transfers.attentionCount
 import com.j2team.fileserver.feature.transfers.attentionBadge
+import com.j2team.fileserver.feature.sync.SyncFolder
+import com.j2team.fileserver.feature.sync.SyncFolderIcon
+import com.j2team.fileserver.feature.sync.SyncFolderStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -147,6 +150,8 @@ fun BrowserScreen(
     onServerSettings: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val syncFolderStore = remember { SyncFolderStore(context.applicationContext) }
+    var syncFolders by remember(profile?.id) { mutableStateOf(syncFolderStore.forProfile(profile?.id.orEmpty())) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
@@ -196,6 +201,13 @@ fun BrowserScreen(
     val uploadQuotaExceededTemplate = stringResource(R.string.upload_quota_exceeded)
     val shareLinkLabel = stringResource(R.string.share_link)
     val basePath = BrowserPath.normalize(profile?.basePath ?: "/")
+
+    LaunchedEffect(profile?.id) {
+        while (true) {
+            syncFolders = syncFolderStore.forProfile(profile?.id.orEmpty())
+            kotlinx.coroutines.delay(2_000)
+        }
+    }
 
     BackHandler(enabled = preview != null) { preview = null }
     BackHandler(enabled = preview == null) {
@@ -937,7 +949,7 @@ fun BrowserScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     gridItems(resources, key = { it.path }) { item ->
-                        ResourceGridCard(item, settings, profile, sessionRepository, item.path in selectedPaths, { openItem(item) }, { selectedPaths = selectedPaths.toggle(item.path) }, { download(item) })
+                        ResourceGridCard(item, settings, profile, sessionRepository, syncFolders.firstOrNull { BrowserPath.normalize(it.remotePath) == BrowserPath.normalize(item.path) }, item.path in selectedPaths, { openItem(item) }, { selectedPaths = selectedPaths.toggle(item.path) }, { download(item) })
                     }
                 }
             } else {
@@ -948,6 +960,7 @@ fun BrowserScreen(
                             settings = settings,
                             profile = profile,
                             sessionRepository = sessionRepository,
+                            syncFolder = syncFolders.firstOrNull { BrowserPath.normalize(it.remotePath) == BrowserPath.normalize(item.path) },
                             selected = item.path in selectedPaths,
                             onClick = { openItem(item) },
                             onLongClick = { selectedPaths = selectedPaths.toggle(item.path) },
@@ -1033,6 +1046,7 @@ private fun ResourceRow(
     settings: AppSettings,
     profile: ServerProfile?,
     sessionRepository: SessionRepository,
+    syncFolder: SyncFolder?,
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -1047,7 +1061,7 @@ private fun ResourceRow(
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface),
     ) {
         Row(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            ResourceVisual(item, settings, profile, sessionRepository, Modifier.size(44.dp))
+            ResourceVisual(item, settings, profile, sessionRepository, syncFolder, Modifier.size(44.dp))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1068,6 +1082,7 @@ private fun ResourceGridCard(
     settings: AppSettings,
     profile: ServerProfile?,
     sessionRepository: SessionRepository,
+    syncFolder: SyncFolder?,
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -1081,7 +1096,7 @@ private fun ResourceGridCard(
         colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface),
     ) {
         Box(Modifier.fillMaxSize().padding(10.dp)) {
-            ResourceVisual(item, settings, profile, sessionRepository, Modifier.size(76.dp).align(Alignment.TopCenter))
+            ResourceVisual(item, settings, profile, sessionRepository, syncFolder, Modifier.size(76.dp).align(Alignment.TopCenter))
             Column(Modifier.align(Alignment.BottomStart).fillMaxWidth()) {
                 Text(item.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (item.isDirectory) stringResource(R.string.folder) else formatBytes(item.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1101,10 +1116,12 @@ private fun ResourceVisual(
     settings: AppSettings,
     profile: ServerProfile?,
     sessionRepository: SessionRepository,
+    syncFolder: SyncFolder?,
     modifier: Modifier,
 ) {
     if (item.isDirectory) {
-        Icon(painterResource(folderIconResource(settings.folderIconSet)), null, modifier, tint = Color.Unspecified)
+        if (syncFolder == null) Icon(painterResource(folderIconResource(settings.folderIconSet)), null, modifier, tint = Color.Unspecified)
+        else SyncFolderIcon(folderIconResource(settings.folderIconSet), syncFolder, modifier)
         return
     }
     val previewKind = PreviewRouter.kind(item.name, item.mimeType)

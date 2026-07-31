@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REAL_FFMPEG=/usr/bin/ffmpeg
+REAL_FFPROBE=/usr/bin/ffprobe
+MAX_SCAN_BYTES=$((1024 * 1024))
+TS_PACKET_BYTES=188
+THUMBNAIL_DARK_YAVG=40
+THUMBNAIL_ATTEMPT_TIMEOUT=30
+
+log_guard() {
+    /usr/bin/logger -t filebrowser-ffmpeg-guard -- "$*" 2>/dev/null || true
+}
+
+byte_hex_at() {
+    local path="$1"
+    local offset="$2"
+    /usr/bin/dd if="$path" bs=1 skip="$offset" count=1 status=none 2>/dev/null \
+        | /usr/bin/od -An -tx1 \
+        | /usr/bin/tr -d ' \n'
+}
+
+png_transport_stream_prefix() {
+    local path="$1"
+    local magic iend_offset prefix
+
+    [[ -f "$path" ]] || return 1
+    magic="$(
+        /usr/bin/dd if="$path" bs=1 count=8 status=none 2>/dev/null \
+            | /usr/bin/od -An -tx1 \
+            | /usr/bin/tr -d ' \n'
+    )"
+    [[ "$magic" == "89504e470d0a1a0a" ]] || return 1
+
+    iend_offset="$(
+        /usr/bin/head -c "$MAX_SCAN_BYTES" -- "$path" 2>/dev/null \
+            | LC_ALL=C /usr/bin/grep -aob -m1 'IEND' \
+            | /usr/bin/cut -d: -f1
+    )"
+    [[ "$iend_offset" =~ ^[0-9]+$ ]] || return 2
+    prefix=$((iend_offset + 8))
+
+    [[ "$(byte_hex_at "$path" "$prefix")" == "47" ]] || return 2
+    [[ "$(byte_hex_at "$path" $((prefix + TS_PACKET_BYTES)))" == "47" ]] || return 2
+    [[ "$(byte_hex_at "$path" $((prefix + TS_PACKET_BYTES * 2)))" == "47" ]] || return 2
+    printf '%s\n' "$prefix"
+}
+
+find_input() {
+    local index
+    input=""
+    input_index=-1
+    for ((index = 0; index < ${#args[@]}; index++)); do
+        if [[ "${args[$index]}" == "-i" && $((index + 1)) -lt ${#args[@]} ]]; then
+            input="${args[$((index + 1))]}"
+            input_index="$index"
+            return 0
+        fi
+    done
+    return 1
+}
+
+seek_argument_value() {
+    local index
+    for ((index = 0; index < ${#args[@]}; index++)); do
+        if [[ ("${args[$index]}" == "-ss" || "${args[$index]}" == "-sseof") \
+            && $((index + 1)) -lt ${#args[@]} ]]; then
+            printf '%s\n' "${args[$((index + 1))]}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+seek_is_opening_frame() {
+    local value="$1"
+    if [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        /usr/bin/awk -v value="$value" 'BEGIN { exit !(value >= 0 && value <= 1) }'
+        return
+    fi
+    [[ "$value" =~ ^0+:0+:0+([.]0+)?$ ]]
+}
+
+remove_seek_arguments() {
+    local index skip_next=0
+    local -a filtered=()
+    for ((index = 0; index < ${#args[@]}; index++)); do
+        if (( skip_next )); then
+            skip_next=0
+            continue
+        fi
+        if [[ "${args[$index]}" == "-ss" || "${args[$index]}" == "-sseof" ]]; then
+            skip_next=1
+            continue
+        fi
+        filtered+=("${args[$index]}")
+    done
+    args=("${filtered[@]}")
+    find_input
+}
+
+is_single_frame_thumbnail() {
+    local index output_index output
+    output_index=$((${#args[@]} - 1))
+    (( output_index >= 0 )) || return 1
+    output="${args[$output_index]}"
+    [[ "$output" == *.jpg || "$output" == *.jpeg ]] || return 1
+    for ((index = 0; index < ${#args[@]}; index++)); do
+        if [[ ("${args[$index]}" == "-frames:v" || "${args[$index]}" == "-vframes") \
+            && $((index + 1)) -lt ${#args[@]} \
+            && "${args[$((index + 1))]}" == "1" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+probe_duration() {
+    local prefix="${1:-}" output
+    local probe_args=(
+        -v error
+        -show_entries format=duration:stream=duration
+        -of default=noprint_wrappers=1:nokey=1
+    )
+    if [[ "$prefix" =~ ^[0-9]+$ ]]; then
+        probe_args+=(-skip_initial_bytes "$prefix" -f mpegts)
+    fi
+    output="$(
+        /usr/bin/timeout --signal=TERM --kill-after=2s 10s \
+            "$REAL_FFPROBE" "${probe_args[@]}" -- "$input" 2>/dev/null \
+            | /usr/bin/awk '$1 ~ /^[0-9]+([.][0-9]+)?$/ && $1 > 0 { print $1; exit }'
+    )"
+    [[ "$output" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    printf '%s\n' "$output"
+}
+
+thumbnail_seek_candidates() {
+    local duration="${1:-}"
+    if [[ "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+        && /usr/bin/awk -v value="$duration" 'BEGIN { exit !(value > 4) }'; then
+        /usr/bin/awk -v duration="$duration" '
+            BEGIN {
+                percentages[1] = 0.20
+                percentages[2] = 0.35
+                percentages[3] = 0.60
+                for (i = 1; i <= 3; i++) {
+                    seek = duration * percentages[i]
+                    if (seek < 2) seek = 2
+                    if (seek >= duration) seek = duration / 2
+                    printf "%.3f\n", seek
+                }
+            }
+        '
+    else
+        printf '%s\n' 30 60 120
+    fi
+}
+
+thumbnail_yavg() {
+    local thumbnail="$1"
+    /usr/bin/timeout --signal=TERM --kill-after=2s 10s \
+        "$REAL_FFMPEG" -nostdin -v error -threads 1 -i "$thumbnail" \
+        -vf 'scale=64:64,signalstats,metadata=print:file=-' \
+        -frames:v 1 -f null - 2>/dev/null \
+        | /usr/bin/awk -F= '/lavfi.signalstats.YAVG=/ { print $2; exit }'
+}
+
+generate_visible_thumbnail() {
+    local duration="$1" output_index output best_file=""
+    local best_yavg=-1 seek yavg status
+    local -a candidate_args
+
+    output_index=$((${#args[@]} - 1))
+    output="${args[$output_index]}"
+    find_input
+
+    while IFS= read -r seek; do
+        [[ "$seek" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
+        candidate_args=(
+            "${args[@]:0:$input_index}"
+            -ss "$seek"
+            "${args[@]:$input_index}"
+        )
+        set +e
+        /usr/bin/timeout --signal=TERM --kill-after=5s "${THUMBNAIL_ATTEMPT_TIMEOUT}s" \
+            "$REAL_FFMPEG" -nostdin -threads 1 -filter_threads 1 "${candidate_args[@]}"
+        status=$?
+        set -e
+        (( status == 0 )) || continue
+        [[ -s "$output" ]] || continue
+
+        yavg="$(thumbnail_yavg "$output")"
+        if [[ ! "$yavg" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            log_guard "thumbnail brightness unavailable; accepting seek=${seek}s: $input"
+            return 0
+        fi
+        log_guard "thumbnail candidate seek=${seek}s yavg=${yavg}: $input"
+        if /usr/bin/awk -v value="$yavg" -v limit="$THUMBNAIL_DARK_YAVG" \
+            'BEGIN { exit !(value >= limit) }'; then
+            [[ -n "$best_file" ]] && /usr/bin/rm -f -- "$best_file"
+            return 0
+        fi
+        if /usr/bin/awk -v value="$yavg" -v best="$best_yavg" \
+            'BEGIN { exit !(value > best) }'; then
+            best_yavg="$yavg"
+            best_file="${output}.guard-best.$$"
+            /usr/bin/cp -- "$output" "$best_file"
+        fi
+    done < <(thumbnail_seek_candidates "$duration")
+
+    if [[ -n "$best_file" && -s "$best_file" ]]; then
+        /usr/bin/mv -f -- "$best_file" "$output"
+        log_guard "all thumbnail candidates were dark; keeping best yavg=${best_yavg}: $input"
+        return 0
+    fi
+    [[ -n "$best_file" ]] && /usr/bin/rm -f -- "$best_file"
+    return 1
+}
+
+args=("$@")
+input=""
+input_index=-1
+find_input || true
+
+prefix=""
+if [[ -n "$input" ]]; then
+    set +e
+    prefix="$(png_transport_stream_prefix "$input")"
+    detection_status=$?
+    set -e
+
+    if (( detection_status == 0 )); then
+        log_guard "stripping ${prefix}-byte PNG prefix before MPEG-TS thumbnail input: $input"
+        args=(
+            "${args[@]:0:$input_index}"
+            -skip_initial_bytes "$prefix"
+            -f mpegts
+            "${args[@]:$input_index}"
+        )
+        find_input
+    elif (( detection_status == 2 )); then
+        log_guard "refusing oversized or malformed PNG passed as video thumbnail input: $input"
+        exit 65
+    fi
+fi
+
+if [[ -n "$input" ]] && is_single_frame_thumbnail; then
+    existing_seek="$(seek_argument_value || true)"
+    if [[ -z "$existing_seek" ]] || seek_is_opening_frame "$existing_seek"; then
+        if [[ -n "$existing_seek" ]]; then
+            log_guard "replacing opening-frame seek=${existing_seek}s for video thumbnail: $input"
+            remove_seek_arguments
+        fi
+        duration="$(probe_duration "$prefix" || true)"
+        if generate_visible_thumbnail "$duration"; then
+            exit 0
+        fi
+        log_guard "candidate thumbnail generation failed; falling back to original first frame: $input"
+    fi
+fi
+
+exec /usr/bin/timeout --signal=TERM --kill-after=5s 45s \
+    "$REAL_FFMPEG" -nostdin -threads 1 -filter_threads 1 "${args[@]}"

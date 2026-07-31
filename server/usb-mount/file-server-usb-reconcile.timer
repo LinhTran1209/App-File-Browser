@@ -3,8 +3,8 @@ Description=Periodically recover File Server USB mounts
 
 [Timer]
 OnBootSec=10s
-OnUnitActiveSec=15s
-AccuracySec=2s
+OnUnitInactiveSec=5min
+AccuracySec=30s
 Unit=file-server-usb-reconcile.service
 Persistent=true
 

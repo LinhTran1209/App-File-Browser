@@ -7,6 +7,9 @@ import com.j2team.fileserver.core.session.EncryptedSecretStore
 import com.j2team.fileserver.core.session.ProcessSecretStore
 import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.feature.transfers.TransferStore
+import com.j2team.fileserver.feature.sync.SyncWorker
+import com.j2team.fileserver.feature.sync.FolderSyncService
+import com.j2team.fileserver.feature.sync.ServerIdentityStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,12 +20,13 @@ class FileServerApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // Purge credentials persisted by older builds; new sessions are process-only.
         EncryptedSecretStore(applicationContext).clearAll()
         applicationScope.launch { AppCacheManager.cleanup(applicationContext) }
+        SyncWorker.schedulePeriodic(this)
+        FolderSyncService.refresh(this)
     }
 
     /** Process-owned queue/session survive Activity recreation and share the global transfer runtime. */
     val transferStore by lazy { TransferStore(this) }
-    val sessionRepository by lazy { SessionRepository(ProcessSecretStore(), FileBrowserClient()) }
+    val sessionRepository by lazy { SessionRepository(ProcessSecretStore(), FileBrowserClient(), identityStore = ServerIdentityStore(this)) }
 }

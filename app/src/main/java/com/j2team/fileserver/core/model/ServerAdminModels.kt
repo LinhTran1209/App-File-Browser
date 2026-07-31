@@ -1,6 +1,6 @@
 package com.j2team.fileserver.core.model
 
-enum class ServerSettingsSection { Profile, Shares, Global, Users }
+enum class ServerSettingsSection { Profile, Sync, Shares, Global, Users }
 
 data class ServerUserPermissions(
     val create: Boolean = false,
@@ -36,6 +36,7 @@ fun ServerUser.effectivePermissions(): ServerUserPermissions =
 
 fun ServerUser.visibleSettingsSections(): List<ServerSettingsSection> = buildList {
     add(ServerSettingsSection.Profile)
+    add(ServerSettingsSection.Sync)
     if (admin || permissions.share) add(ServerSettingsSection.Shares)
     if (admin) {
         add(ServerSettingsSection.Global)

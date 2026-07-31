@@ -16,6 +16,7 @@ object AppIcons {
     @DrawableRes val Edit = R.drawable.ic_edit
     @DrawableRes val Share = R.drawable.ic_share
     @DrawableRes val Copy = R.drawable.ic_copy
+    @DrawableRes val Sync = R.drawable.ic_sync
     @DrawableRes val SortAscending = R.drawable.ic_sort_ascending
     @DrawableRes val SortDescending = R.drawable.ic_sort_descending
     @DrawableRes val File = R.drawable.ic_file

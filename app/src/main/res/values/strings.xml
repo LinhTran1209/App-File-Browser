@@ -174,4 +174,19 @@
     <string name="select_another_folder">Chọn thêm thư mục</string>
     <string name="archive_download_title">Tải xuống tệp</string>
     <string name="archive_download_message">Chọn định dạng bạn muốn tải xuống.</string>
+    <string name="sync_folders">Thư mục đồng bộ</string>
+    <string name="sync_folder_management">Quản lý thư mục đồng bộ</string>
+    <string name="add_sync_folder">Thêm thư mục đồng bộ</string>
+    <string name="no_sync_folders">Chưa có thư mục đồng bộ.</string>
+    <string name="choose_local_folder">Chọn thư mục trên máy</string>
+    <string name="local_folder">Thư mục trên máy</string>
+    <string name="choose_cloud_parent">Chọn vị trí trên cloud</string>
+    <string name="cloud_folder">Thư mục trên cloud</string>
+    <string name="add">Thêm</string>
+    <string name="sync_now">Đồng bộ ngay</string>
+    <string name="delete_sync_folder_title">Xóa thư mục đồng bộ?</string>
+    <string name="delete_sync_folder_message">Bạn có chắc muốn xóa cấu hình đồng bộ “%1$s”? Tệp trên điện thoại và cloud sẽ được giữ nguyên.</string>
+    <string name="sync_notification_channel">Đồng bộ thư mục</string>
+    <string name="sync_notification_title">Đang đồng bộ thư mục</string>
+    <string name="sync_notification_text">Theo dõi thay đổi trên điện thoại và cloud</string>
 </resources>

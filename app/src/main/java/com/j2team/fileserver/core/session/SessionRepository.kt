@@ -12,6 +12,9 @@ import com.j2team.fileserver.core.model.ServerUser
 import com.j2team.fileserver.core.model.AdminDirectoryListing
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.network.PreviewProbe
+import com.j2team.fileserver.feature.sync.RemoteChangePage
+import com.j2team.fileserver.feature.sync.SyncEntry
+import com.j2team.fileserver.feature.sync.ServerIdentityStore
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
@@ -21,6 +24,7 @@ class SessionRepository(
     private val secretStore: SecretStore,
     private val transport: FileBrowserClient,
     private val tokenStore: MutableMap<String, String> = ConcurrentHashMap(),
+    private val identityStore: ServerIdentityStore? = null,
 ) {
     private val permissionCache = SessionPermissionCache()
 
@@ -28,7 +32,10 @@ class SessionRepository(
     suspend fun open(profile: ServerProfile): Result<AuthenticatedSession> =
         authenticated(profile) { token ->
             transport.listResult(profile, token, profile.basePath).map { Unit }
-        }.map { AuthenticatedSession(profile, tokenStore[profile.id].orEmpty()) }
+        }.map {
+            bindIdentity(profile, tokenStore[profile.id].orEmpty())
+            AuthenticatedSession(profile, tokenStore[profile.id].orEmpty())
+        }
 
     suspend fun login(
         profile: ServerProfile,
@@ -41,6 +48,7 @@ class SessionRepository(
             secretStore.put(profile.id, StoredCredential(username, password))
             permissionCache.clear(profile.id)
             tokenStore[profile.id] = token
+            bindIdentity(profile, token)
             AuthenticatedSession(profile, token)
         } finally {
             password.fill('\u0000')
@@ -56,6 +64,15 @@ class SessionRepository(
 
     suspend fun list(profile: ServerProfile, path: String): Result<List<RemoteResource>> =
         authenticated(profile) { token -> transport.listResult(profile, token, path) }
+
+    suspend fun recursiveList(profile: ServerProfile, path: String): Result<Map<String, SyncEntry>> =
+        authenticated(profile) { token -> transport.recursiveListResult(profile, token, path) }
+
+    suspend fun syncChanges(profile: ServerProfile, path: String, cursor: Long, waitSeconds: Int = 0, bootstrap: Boolean = false): Result<RemoteChangePage> =
+        authenticated(profile) { token -> transport.syncChangesResult(profile, token, path, cursor, waitSeconds, bootstrap) }
+
+    suspend fun createSyncToken(profile: ServerProfile, path: String): Result<String> =
+        authenticated(profile) { token -> transport.createSyncTokenResult(profile, token, path) }
 
     suspend fun currentPermissions(profile: ServerProfile): Result<ResourcePermissions> =
         authenticated(profile) { token -> permissionResult(profile, token) }
@@ -89,6 +106,14 @@ class SessionRepository(
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
     ): Result<Unit> = authenticated(profile) { token ->
         transport.downloadToResult(profile, token, remotePath, openDestination, onProgress)
+    }
+
+    private fun bindIdentity(profile: ServerProfile, token: String) {
+        val store = identityStore ?: return
+        transport.syncIdentityResult(profile, token).value?.let {
+            store.put(profile.id, it)
+            store.linkLegacyFolders(profile, it, transport)
+        }
     }
 
     suspend fun downloadArchiveTo(

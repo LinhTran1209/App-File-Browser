@@ -72,6 +72,8 @@ import com.j2team.fileserver.core.model.validateUserStorage
 import com.j2team.fileserver.core.model.visibleSettingsSections
 import com.j2team.fileserver.core.session.SessionRepository
 import com.j2team.fileserver.core.ui.AppIcons
+import com.j2team.fileserver.feature.sync.SyncFoldersScreen
+import com.j2team.fileserver.feature.settings.FolderIconSet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -82,6 +84,8 @@ fun ServerSettingsScreen(
     profile: ServerProfile?,
     repository: SessionRepository,
     onBack: () -> Unit,
+    onOpenRemoteFolder: (String) -> Unit = {},
+    folderIconSet: FolderIconSet = FolderIconSet.Classic,
 ) {
     val currentProfile = profile
     if (currentProfile == null) {
@@ -184,6 +188,12 @@ fun ServerSettingsScreen(
                         },
                     )
                 }
+                ServerSettingsSection.Sync -> SyncFoldersScreen(
+                    profile = currentProfile,
+                    repository = repository,
+                    onOpenRemoteFolder = onOpenRemoteFolder,
+                    folderIconSet = folderIconSet,
+                )
                 ServerSettingsSection.Shares -> ShareManagement(
                     shares = shares,
                     onCopy = { share ->
@@ -765,6 +775,7 @@ private fun SaveButton(enabled: Boolean, onClick: () -> Unit) =
 
 private fun ServerSettingsSection.labelResource(): Int = when (this) {
     ServerSettingsSection.Profile -> R.string.profile
+    ServerSettingsSection.Sync -> R.string.sync_folders
     ServerSettingsSection.Shares -> R.string.shares
     ServerSettingsSection.Global -> R.string.global
     ServerSettingsSection.Users -> R.string.users

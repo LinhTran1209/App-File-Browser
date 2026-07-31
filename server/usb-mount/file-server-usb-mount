@@ -14,6 +14,7 @@ DEV_ROOT="${DEV_ROOT:-/dev}"
 LOCK_FILE="${LOCK_FILE:-/run/lock/file-server-usb.lock}"
 COMPAT_UUID="${COMPAT_UUID:-}"
 RESTART_SERVICES="${RESTART_SERVICES:-1}"
+AUTO_NTFS_REPAIR="${AUTO_NTFS_REPAIR:-1}"
 
 if [[ -r "$CONFIG_FILE" ]]; then
     # This root-owned file contains mount policy only; secrets live in separate 0600 files.
@@ -29,7 +30,7 @@ log() { logger -t file-server-usb -- "$*" 2>/dev/null || printf '%s\n' "$*" >&2;
 safe_name() { printf '%s' "$1" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-*//;s/-*$//' | cut -c1-80; }
 read_state() { [[ -r "$1/$2" ]] && cat "$1/$2" || true; }
 write_state() { printf '%s' "$3" >"$1/$2"; }
-is_mounted() { findmnt -rn -T "$1" >/dev/null 2>&1; }
+is_mounted() { mountpoint -q "$1"; }
 
 topology_changed=0
 declare -A devices fs_types uuids labels names
@@ -107,7 +108,7 @@ mount_ordinary() {
 
 mount_bitlocker() {
     local stable="$1" device="$2" uuid="$3" label="$4"
-    local key display target state unlock i
+    local key display target state unlock i loopdev mount_ok
     key="$KEY_DIR/$uuid.key"
     [[ -n "$uuid" && -r "$key" ]] || key="$FALLBACK_KEY"
     if [[ ! -r "$key" ]]; then
@@ -134,7 +135,31 @@ mount_bitlocker() {
         return 1
     fi
     for i in {1..10}; do [[ -e "$unlock/dislocker-file" ]] && break; sleep 0.2; done
-    if [[ ! -e "$unlock/dislocker-file" ]] || ! timeout 15 mount -o loop,rw,nosuid,nodev,noexec "$unlock/dislocker-file" "$target"; then
+    if [[ ! -e "$unlock/dislocker-file" ]]; then
+        timeout 10 fusermount -uz "$unlock" >/dev/null 2>&1 || true
+        log "BitLocker payload missing for ${uuid:-$device}"
+        return 1
+    fi
+
+    mount_ok=0
+    if timeout 15 mount -t ntfs3 -o loop,rw,noatime,nosuid,nodev,noexec,uid=1000,gid=1000,dmask=0002,fmask=0113 "$unlock/dislocker-file" "$target"; then
+        mount_ok=1
+    elif [[ "$AUTO_NTFS_REPAIR" == "1" ]] && command -v ntfsfix >/dev/null 2>&1; then
+        log "NTFS mount failed for ${uuid:-$device}; attempting one automatic dirty-volume repair"
+        loopdev="$(losetup -j "$unlock/dislocker-file" | awk -F: 'NR==1 {print $1}')"
+        [[ -n "$loopdev" ]] || loopdev="$(losetup --find --show "$unlock/dislocker-file" 2>/dev/null || true)"
+        if [[ -b "$loopdev" ]] && timeout 120 ntfsfix "$loopdev" >/dev/null 2>&1 && timeout 30 ntfsfix -d "$loopdev" >/dev/null 2>&1; then
+            losetup -d "$loopdev" >/dev/null 2>&1 || true
+            loopdev=""
+            if timeout 15 mount -t ntfs3 -o loop,rw,noatime,nosuid,nodev,noexec,uid=1000,gid=1000,dmask=0002,fmask=0113 "$unlock/dislocker-file" "$target"; then
+                mount_ok=1
+                log "automatic NTFS dirty-volume repair succeeded for ${uuid:-$device}"
+            fi
+        fi
+        [[ -z "$loopdev" ]] || losetup -d "$loopdev" >/dev/null 2>&1 || true
+    fi
+
+    if [[ "$mount_ok" != "1" ]]; then
         timeout 10 fusermount -uz "$unlock" >/dev/null 2>&1 || true
         log "decrypted filesystem mount failed for ${uuid:-$device}"
         return 1
@@ -178,6 +203,8 @@ for stable in "${!devices[@]}"; do
 done
 
 if [[ "$topology_changed" == "1" && "$RESTART_SERVICES" == "1" ]]; then
+    # PathExists does not emit an inotify event when a mounted filesystem reveals the marker.
+    systemctl start aria2.service >/dev/null 2>&1 || true
     systemctl try-restart filebrowser.service >/dev/null 2>&1 || true
     systemctl try-restart file-server-thumbnail.service >/dev/null 2>&1 || true
 fi

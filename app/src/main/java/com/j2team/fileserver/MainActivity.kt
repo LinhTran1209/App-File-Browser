@@ -217,6 +217,11 @@ private fun FileServerApp(
                     profile = selected,
                     repository = sessionRepository,
                     onBack = { screenName = Screen.Browser.name },
+                    onOpenRemoteFolder = {
+                        browserPath = BrowserPath.normalize(it)
+                        screenName = Screen.Browser.name
+                    },
+                    folderIconSet = settings.folderIconSet,
                 )
                 Screen.Settings -> SettingsScreen(
                     settings = settings,

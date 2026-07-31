@@ -25,7 +25,7 @@ class ServerAdminPolicyTest {
         assertTrue(effective.rename)
         assertTrue(effective.share)
         assertEquals(
-            listOf(ServerSettingsSection.Profile, ServerSettingsSection.Shares, ServerSettingsSection.Global, ServerSettingsSection.Users),
+            listOf(ServerSettingsSection.Profile, ServerSettingsSection.Sync, ServerSettingsSection.Shares, ServerSettingsSection.Global, ServerSettingsSection.Users),
             user.visibleSettingsSections(),
         )
     }
@@ -40,7 +40,7 @@ class ServerAdminPolicyTest {
         )
 
         assertFalse(user.effectivePermissions().share)
-        assertEquals(listOf(ServerSettingsSection.Profile), user.visibleSettingsSections())
+        assertEquals(listOf(ServerSettingsSection.Profile, ServerSettingsSection.Sync), user.visibleSettingsSections())
     }
 
     @Test
@@ -53,7 +53,7 @@ class ServerAdminPolicyTest {
         )
 
         assertEquals(
-            listOf(ServerSettingsSection.Profile, ServerSettingsSection.Shares),
+            listOf(ServerSettingsSection.Profile, ServerSettingsSection.Sync, ServerSettingsSection.Shares),
             user.visibleSettingsSections(),
         )
     }
