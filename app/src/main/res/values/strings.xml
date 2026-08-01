@@ -177,6 +177,10 @@
     <string name="folders_selected">Đã chọn %1$d thư mục.</string>
     <string name="upload_selected_folders">Tải các thư mục đã chọn</string>
     <string name="select_another_folder">Chọn thêm thư mục</string>
+    <string name="select_current_folder">Chọn thư mục hiện tại: %1$s</string>
+    <string name="folder_multi_select_hint">Chạm để mở thư mục. Nhấn giữ hoặc đánh dấu để chọn nhiều thư mục.</string>
+    <string name="no_subfolders">Không có thư mục con.</string>
+    <string name="loading_folders">Đang đọc danh sách thư mục…</string>
     <string name="archive_download_title">Tải xuống tệp</string>
     <string name="archive_download_message">Chọn định dạng bạn muốn tải xuống.</string>
     <string name="sync_folders">Thư mục đồng bộ</string>

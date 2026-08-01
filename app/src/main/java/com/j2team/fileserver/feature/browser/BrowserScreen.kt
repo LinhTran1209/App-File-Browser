@@ -7,7 +7,6 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
-import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
@@ -95,8 +94,6 @@ import com.j2team.fileserver.core.ui.AppIcons
 import com.j2team.fileserver.core.ui.DialogOutlinedTextField
 import com.j2team.fileserver.core.ui.FolderNavigationRow
 import com.j2team.fileserver.feature.settings.AppSettings
-import com.j2team.fileserver.feature.transfers.TransferDirection
-import com.j2team.fileserver.feature.transfers.TransferState
 import com.j2team.fileserver.feature.transfers.TransferCoordinator
 import com.j2team.fileserver.feature.transfers.DownloadConflict
 import com.j2team.fileserver.feature.transfers.TransferStore
@@ -109,7 +106,6 @@ import com.j2team.fileserver.feature.sync.ServerIdentityStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.Locale
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -177,8 +173,7 @@ fun BrowserScreen(
     var pendingArchiveDownload by remember { mutableStateOf<PendingArchiveDownload?>(null) }
     var archiveItems by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
     var archiveDialogOpen by remember { mutableStateOf(false) }
-    var pendingFolderUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
-    var folderBatchDialogOpen by remember { mutableStateOf(false) }
+    var folderPickerRootUri by remember { mutableStateOf<Uri?>(null) }
     var destinationOperation by remember { mutableStateOf<DestinationOperation?>(null) }
     var destinationPath by remember(path) { mutableStateOf(path) }
     var destinationDirectories by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
@@ -266,16 +261,12 @@ fun BrowserScreen(
 
     suspend fun uploadFits(selectedBytes: Long?, label: String): Boolean {
         val current = profile ?: return false
-        if (selectedBytes == null || selectedBytes < 0) {
-            mutationError = uploadSizeUnavailable
-            return false
-        }
         val usage = withContext(Dispatchers.IO) { sessionRepository.diskUsage(current, path) }
             .getOrElse {
                 mutationError = it.message ?: it.toString()
                 return false
             }
-        if (!uploadSelectionFits(selectedBytes, usage.total, usage.used)) {
+        if (selectedBytes != null && selectedBytes >= 0 && !uploadSelectionFits(selectedBytes, usage.total, usage.used)) {
             mutationError = String.format(
                 Locale.getDefault(),
                 uploadQuotaExceededTemplate,
@@ -320,19 +311,23 @@ fun BrowserScreen(
     }
     val uploadFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null && directoryPermissions.canUpload && directoryPermissions.canCreate) {
-            if (uri !in pendingFolderUris) pendingFolderUris = pendingFolderUris + uri
-            folderBatchDialogOpen = true
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }.onSuccess {
+                folderPickerRootUri = uri
+            }.onFailure {
+                mutationError = it.message ?: it.toString()
+            }
         } else if (uri != null) mutationError = notPermittedMessage
     }
 
-    fun uploadFolders(uris: List<Uri>) {
-        if (uris.isEmpty()) return
+    fun uploadFolders(folders: List<DocumentFile>) {
+        if (folders.isEmpty()) return
         scope.launch {
             runCatching {
                 val metadata = withContext(Dispatchers.IO) {
-                    uris.map { uri ->
-                        val root = DocumentFile.fromTreeUri(context, uri) ?: error(uploadSizeUnavailable)
-                        (root.name ?: "folder") to selectedTreeSize(context.contentResolver, root)
+                    folders.map { folder ->
+                        (folder.name ?: "folder") to selectedTreeSize(context.contentResolver, folder)
                     }
                 }
                 val totalBytes = metadata.takeIf { entries -> entries.all { (it.second ?: -1L) >= 0L } }
@@ -340,10 +335,7 @@ fun BrowserScreen(
                 val label = if (metadata.size == 1) metadata.first().first else "${metadata.size} folders"
                 if (!uploadFits(totalBytes, label)) return@launch
                 val coordinator = transferCoordinator ?: error("No active server")
-                uris.forEach { uri ->
-                    context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    coordinator.enqueueFolder(uri, path)
-                }
+                coordinator.enqueueFolders(folders, path)
             }.onSuccess { refresh() }.onFailure { mutationError = it.message ?: it.toString() }
         }
     }
@@ -483,24 +475,15 @@ fun BrowserScreen(
         return
     }
 
-    if (folderBatchDialogOpen) {
-        AlertDialog(
-            onDismissRequest = { folderBatchDialogOpen = false; pendingFolderUris = emptyList() },
-            title = { Text(stringResource(R.string.upload_folders_title)) },
-            text = { Text(stringResource(R.string.folders_selected, pendingFolderUris.size)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    val chosen = pendingFolderUris
-                    pendingFolderUris = emptyList()
-                    folderBatchDialogOpen = false
-                    uploadFolders(chosen)
-                }) { Text(stringResource(R.string.upload_selected_folders)) }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    folderBatchDialogOpen = false
-                    uploadFolderPicker.launch(null)
-                }) { Text(stringResource(R.string.select_another_folder)) }
+    folderPickerRootUri?.let { rootUri ->
+        LocalFolderBatchPicker(
+            context = context,
+            grantedTreeUri = rootUri,
+            folderIcon = folderIconResource(settings.folderIconSet),
+            onDismiss = { folderPickerRootUri = null },
+            onConfirm = { selectedFolders ->
+                folderPickerRootUri = null
+                uploadFolders(selectedFolders)
             },
         )
     }
@@ -1206,8 +1189,6 @@ private fun ResourceVisual(
 
 private fun Set<String>.toggle(path: String): Set<String> = if (path in this) this - path else this + path
 
-private class UploadNotPermitted : IllegalStateException()
-
 private fun displayName(resolver: ContentResolver, uri: Uri): String? = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
     if (cursor.moveToFirst()) cursor.getString(0) else null
 }
@@ -1226,64 +1207,4 @@ private fun selectedTreeSize(resolver: ContentResolver, document: DocumentFile):
         total = runCatching { Math.addExact(total, childSize) }.getOrNull() ?: return null
     }
     return total
-}
-
-private suspend fun uploadTree(
-    context: Context,
-    treeUri: Uri,
-    profile: ServerProfile,
-    parentPath: String,
-    sessionRepository: SessionRepository,
-    transferStore: TransferStore,
-): Result<Unit> = runCatching {
-    val resolver = context.contentResolver
-    val rootId = DocumentsContract.getTreeDocumentId(treeUri)
-    val rootUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootId)
-    val rootName = displayName(resolver, rootUri) ?: "folder"
-    val remoteRoot = BrowserPath.child(parentPath, rootName)
-    val permissions = sessionRepository.currentPermissions(profile).getOrThrow()
-    if (!permissions.canUpload || !permissions.canCreate) throw UploadNotPermitted()
-    sessionRepository.createDirectory(profile, remoteRoot).getOrThrow()
-    uploadChildren(resolver, treeUri, rootId, profile, remoteRoot, sessionRepository, transferStore, context.cacheDir)
-}
-
-private suspend fun uploadChildren(
-    resolver: ContentResolver,
-    treeUri: Uri,
-    documentId: String,
-    profile: ServerProfile,
-    remoteParent: String,
-    sessionRepository: SessionRepository,
-    transferStore: TransferStore,
-    cacheDir: File,
-) {
-    val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
-    resolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { cursor ->
-        while (cursor.moveToNext()) {
-            val childId = cursor.getString(0)
-            val name = cursor.getString(1)
-            val mimeType = cursor.getString(2)
-            if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
-                val remoteDirectory = BrowserPath.child(remoteParent, name)
-                val permissions = sessionRepository.currentPermissions(profile).getOrThrow()
-                if (!permissions.canUpload || !permissions.canCreate) throw UploadNotPermitted()
-                sessionRepository.createDirectory(profile, remoteDirectory).getOrThrow()
-                uploadChildren(resolver, treeUri, childId, profile, remoteDirectory, sessionRepository, transferStore, cacheDir)
-            } else {
-                val local = File.createTempFile("upload-", ".part", cacheDir)
-                try {
-                    val source = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
-                    resolver.openInputStream(source)?.use { input -> local.outputStream().use(input::copyTo) } ?: error("Unable to read $name")
-                    val permissions = sessionRepository.currentPermissions(profile).getOrThrow()
-                    if (!permissions.canUpload || !permissions.canCreate) throw UploadNotPermitted()
-                    var task = transferStore.enqueue(name, remoteParent, TransferDirection.Upload, local.length())
-                    task = transferStore.save(task.copy(state = TransferState.Running))
-                    sessionRepository.uploadOnce(profile, remoteParent, local, name) { sent, _ -> transferStore.update(task.id, sent, TransferState.Running) }.getOrThrow()
-                    transferStore.update(task.id, task.totalBytes, TransferState.Completed)
-                } finally {
-                    local.delete()
-                }
-            }
-        }
-    } ?: error("Unable to inspect selected folder")
 }

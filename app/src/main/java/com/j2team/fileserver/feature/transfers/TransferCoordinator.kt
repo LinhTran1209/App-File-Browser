@@ -47,17 +47,25 @@ class TransferCoordinator(
     }
 
     /** Creates every remote directory before its child files are queued, with one durable task per file. */
-    suspend fun enqueueFolder(treeUri: Uri, remotePath: String) = withContext(Dispatchers.IO) {
+    suspend fun enqueueFolder(treeUri: Uri, remotePath: String) {
+        val root = DocumentFile.fromTreeUri(context, treeUri) ?: throw IOException("Unable to access selected folder")
+        enqueueFolders(listOf(root), remotePath)
+    }
+
+    /** Plans all selected trees as one batch so several folders cannot interrupt each other. */
+    suspend fun enqueueFolders(folders: List<DocumentFile>, remotePath: String) = withContext(Dispatchers.IO) {
+        require(folders.isNotEmpty()) { "At least one folder is required" }
         // Directory creation is a server mutation too. Keep it in the same single-upload
         // lane so selecting another folder cannot interrupt a file body already in flight.
         uploadSemaphore.withPermit {
-            val root = DocumentFile.fromTreeUri(context, treeUri) ?: throw IOException("Unable to access selected folder")
-            require(root.isDirectory) { "Selected item is not a folder" }
             ensureUploadPermission(requiresCreate = true)
-            val rootPath = BrowserPath.child(remotePath, root.name ?: "folder")
-            sessionRepository.createDirectory(profile, rootPath).getOrThrow()
             val files = mutableListOf<Pair<DocumentFile, String>>()
-            createDirectoryPlan(root, rootPath, files)
+            folders.distinctBy { it.uri }.forEach { root ->
+                require(root.isDirectory) { "Selected item is not a folder" }
+                val rootPath = BrowserPath.child(remotePath, root.name ?: "folder")
+                ensureRemoteDirectory(rootPath)
+                createDirectoryPlan(root, rootPath, files)
+            }
             files.forEach { (child, parent) -> enqueuePlannedFile(child, parent) }
         }
     }
@@ -149,7 +157,7 @@ class TransferCoordinator(
             val name = child.name ?: return@forEach
             val remoteDirectory = BrowserPath.child(remoteParent, name)
             ensureUploadPermission(requiresCreate = true)
-            sessionRepository.createDirectory(profile, remoteDirectory).getOrThrow()
+            ensureRemoteDirectory(remoteDirectory)
             createDirectoryPlan(child, remoteDirectory, files)
         }
         children.filter { it.isFile }.forEach { child ->
@@ -161,6 +169,16 @@ class TransferCoordinator(
         val name = child.name ?: return
         val task = transferStore.enqueue(name, remoteParent, TransferDirection.Upload, child.length().coerceAtLeast(0L), child.uri.toString(), profile.id)
         startUpload(task)
+    }
+
+    /** Folder creation is idempotent for resumed batches and overlapping selections. */
+    private suspend fun ensureRemoteDirectory(path: String) {
+        val creation = sessionRepository.createDirectory(profile, path)
+        if (creation.isSuccess) return
+        val normalized = BrowserPath.normalize(path)
+        val exists = sessionRepository.list(profile, BrowserPath.parent(normalized)).getOrNull()
+            ?.any { it.isDirectory && BrowserPath.normalize(it.path) == normalized } == true
+        if (!exists) creation.getOrThrow()
     }
 
     private fun startUpload(task: TransferTask) {

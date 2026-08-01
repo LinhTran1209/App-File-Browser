@@ -177,6 +177,10 @@
     <string name="folders_selected">%1$d folders selected.</string>
     <string name="upload_selected_folders">Upload selected folders</string>
     <string name="select_another_folder">Select another folder</string>
+    <string name="select_current_folder">Select current folder: %1$s</string>
+    <string name="folder_multi_select_hint">Tap to open a folder. Long-press or check folders to select multiple.</string>
+    <string name="no_subfolders">No subfolders.</string>
+    <string name="loading_folders">Loading folders…</string>
     <string name="archive_download_title">Download files</string>
     <string name="archive_download_message">Choose the format you want to download.</string>
     <string name="sync_folders">Sync folders</string>
