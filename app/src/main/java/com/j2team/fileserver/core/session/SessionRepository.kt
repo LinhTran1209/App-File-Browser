@@ -31,9 +31,11 @@ class SessionRepository(
     fun isReachable(profile: ServerProfile): Boolean = transport.isReachable(profile)
     suspend fun open(profile: ServerProfile): Result<AuthenticatedSession> =
         authenticated(profile) { token ->
-            transport.listResult(profile, token, profile.basePath).map { Unit }
+            transport.syncIdentityResult(profile, token).map { identity ->
+                identityStore?.put(profile.id, identity)
+                identityStore?.linkLegacyFolders(profile, identity, transport)
+            }
         }.map {
-            bindIdentity(profile, tokenStore[profile.id].orEmpty())
             AuthenticatedSession(profile, tokenStore[profile.id].orEmpty())
         }
 
@@ -163,6 +165,12 @@ class SessionRepository(
     suspend fun move(profile: ServerProfile, resources: List<RemoteResource>, destinationDirectory: String): Result<Unit> =
         mutationToken(profile).fold(
             onSuccess = { token -> transport.move(profile, token, resources, destinationDirectory) },
+            onFailure = { error -> Result.failure(error) },
+        )
+
+    suspend fun copy(profile: ServerProfile, resources: List<RemoteResource>, destinationDirectory: String): Result<Unit> =
+        mutationToken(profile).fold(
+            onSuccess = { token -> transport.copy(profile, token, resources, destinationDirectory) },
             onFailure = { error -> Result.failure(error) },
         )
 

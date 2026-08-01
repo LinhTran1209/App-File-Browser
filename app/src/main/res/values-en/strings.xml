@@ -51,6 +51,9 @@
     <string name="new_folder">New folder</string>
     <string name="upload_files">Upload files</string>
     <string name="move">Move</string>
+    <string name="copy">Copy</string>
+    <string name="copy_selected">Copy selected items</string>
+    <string name="copy_here">Copy here</string>
     <string name="move_selected">Move selected items</string>
     <string name="destination_folder">Destination folder</string>
     <string name="move_here">Move here</string>

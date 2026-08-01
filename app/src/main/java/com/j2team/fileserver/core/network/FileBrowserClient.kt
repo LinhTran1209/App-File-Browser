@@ -314,6 +314,29 @@ class FileBrowserClient {
         }
     }
 
+    suspend fun copy(
+        profile: ServerProfile,
+        token: String? = null,
+        resources: List<RemoteResource>,
+        destinationDirectory: String,
+    ): Result<Unit> = runCatching {
+        require(resources.isNotEmpty()) { "At least one resource is required" }
+        val destinationParent = destinationDirectory.trim().let { if (it.isEmpty()) "/" else "/" + it.trim('/') }
+        resources.forEach { resource ->
+            val sourcePath = resource.path + if (resource.isDirectory && !resource.path.endsWith('/')) "/" else ""
+            val destinationPath = destinationParent.trimEnd('/') + "/" + resource.name
+            val encodedDestination = java.net.URLEncoder.encode(destinationPath, Charsets.UTF_8.name()).replace("+", "%20")
+            val url = apiUrl(profile, "/api/resources", sourcePath) +
+                "?action=copy&destination=$encodedDestination&override=false&rename=false"
+            val connection = open(url, "PATCH").apply {
+                setRequestProperty("Accept", "application/json")
+                applyAuthorization(this, token)
+            }
+            val code = connection.responseCode
+            require(code in 200..299) { requestError("Unable to copy resource", code, connection) }
+        }
+    }
+
     suspend fun rename(
         profile: ServerProfile,
         token: String? = null,

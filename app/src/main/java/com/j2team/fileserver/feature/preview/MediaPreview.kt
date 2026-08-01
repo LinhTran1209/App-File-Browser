@@ -181,10 +181,12 @@ internal fun createMediaPlayer(
     }
 }
 
-internal fun mediaHttpClient(): OkHttpClient = OkHttpClient.Builder()
+private val sharedMediaHttpClient: OkHttpClient by lazy { OkHttpClient.Builder()
     .followRedirects(false)
     .followSslRedirects(false)
-    .build()
+    .build() }
+
+internal fun mediaHttpClient(): OkHttpClient = sharedMediaHttpClient
 
 internal suspend fun requestVideoThumbnailOffMain(
     dispatcher: CoroutineDispatcher = Dispatchers.IO,

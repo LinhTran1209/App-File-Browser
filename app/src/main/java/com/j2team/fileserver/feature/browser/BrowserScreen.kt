@@ -105,6 +105,7 @@ import com.j2team.fileserver.feature.transfers.attentionBadge
 import com.j2team.fileserver.feature.sync.SyncFolder
 import com.j2team.fileserver.feature.sync.SyncFolderIcon
 import com.j2team.fileserver.feature.sync.SyncFolderStore
+import com.j2team.fileserver.feature.sync.ServerIdentityStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -134,6 +135,8 @@ private data class PendingArchiveDownload(
     val format: ArchiveFormat,
     val name: String,
 )
+
+private enum class DestinationOperation { Copy, Move }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -176,10 +179,10 @@ fun BrowserScreen(
     var archiveDialogOpen by remember { mutableStateOf(false) }
     var pendingFolderUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var folderBatchDialogOpen by remember { mutableStateOf(false) }
-    var moveDialogOpen by remember { mutableStateOf(false) }
-    var moveDestination by remember(path) { mutableStateOf(path) }
-    var moveDirectories by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
-    var moveLoading by remember { mutableStateOf(false) }
+    var destinationOperation by remember { mutableStateOf<DestinationOperation?>(null) }
+    var destinationPath by remember(path) { mutableStateOf(path) }
+    var destinationDirectories by remember { mutableStateOf<List<RemoteResource>>(emptyList()) }
+    var destinationLoading by remember { mutableStateOf(false) }
     var sortAscending by remember { mutableStateOf(true) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var renameValue by remember { mutableStateOf("") }
@@ -231,10 +234,12 @@ fun BrowserScreen(
                     listError = null
                 }
                 .onFailure { listError = it.message ?: it.toString() }
-            withContext(Dispatchers.IO) { sessionRepository.diskUsage(current, path) }
-                .onSuccess { diskUsage = it }
-                .onFailure { diskUsage = null }
             loading = false
+            launch {
+                withContext(Dispatchers.IO) { sessionRepository.diskUsage(current, path) }
+                    .onSuccess { diskUsage = it }
+                    .onFailure { diskUsage = null }
+            }
         }
     }
     LaunchedEffect(profile, path) { refresh() }
@@ -242,21 +247,21 @@ fun BrowserScreen(
     LaunchedEffect(path, pathScrollState.maxValue) {
         pathScrollState.scrollTo(pathScrollState.maxValue)
     }
-    LaunchedEffect(moveDialogOpen, moveDestination, profile) {
+    LaunchedEffect(destinationOperation, destinationPath, profile) {
         val current = profile ?: return@LaunchedEffect
-        if (!moveDialogOpen) return@LaunchedEffect
-        val selectedForMove = resources.filter { it.path in selectedPaths }
-        moveLoading = true
-        withContext(Dispatchers.IO) { sessionRepository.list(current, moveDestination) }
+        if (destinationOperation == null) return@LaunchedEffect
+        val selectedForDestination = resources.filter { it.path in selectedPaths }
+        destinationLoading = true
+        withContext(Dispatchers.IO) { sessionRepository.list(current, destinationPath) }
             .onSuccess { listed ->
-                moveDirectories = listed.filter { candidate ->
-                    candidate.isDirectory && selectedForMove.none { chosen ->
+                destinationDirectories = listed.filter { candidate ->
+                    candidate.isDirectory && selectedForDestination.none { chosen ->
                         candidate.path == chosen.path || candidate.path.startsWith(chosen.path.trimEnd('/') + "/")
                     }
                 }.sortedBy { it.name.lowercase() }
             }
-            .onFailure { mutationError = it.message ?: it.toString(); moveDirectories = emptyList() }
-        moveLoading = false
+            .onFailure { mutationError = it.message ?: it.toString(); destinationDirectories = emptyList() }
+        destinationLoading = false
     }
 
     suspend fun uploadFits(selectedBytes: Long?, label: String): Boolean {
@@ -692,28 +697,28 @@ fun BrowserScreen(
         )
     }
 
-    if (moveDialogOpen) {
+    destinationOperation?.let { operation ->
         AlertDialog(
-            onDismissRequest = { if (!mutating) moveDialogOpen = false },
+            onDismissRequest = { if (!mutating) destinationOperation = null },
             modifier = Modifier.fillMaxWidth(0.82f),
             shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-            title = { Text(stringResource(R.string.move_selected)) },
+            title = { Text(stringResource(if (operation == DestinationOperation.Copy) R.string.copy_selected else R.string.move_selected)) },
             text = {
                 Column(Modifier.fillMaxWidth().height(300.dp)) {
-                    Text(moveDestination, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (BrowserPath.normalize(moveDestination) != "/") {
-                        TextButton(onClick = { moveDestination = BrowserPath.parent(moveDestination) }) {
+                    Text(destinationPath, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (BrowserPath.normalize(destinationPath) != "/") {
+                        TextButton(onClick = { destinationPath = BrowserPath.parent(destinationPath) }) {
                             Text("‹  ${stringResource(R.string.destination_folder)}")
                         }
                     }
-                    if (moveLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    if (destinationLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
                     LazyColumn(Modifier.weight(1f)) {
-                        items(moveDirectories, key = { it.path }) { directory ->
+                        items(destinationDirectories, key = { it.path }) { directory ->
                             FolderNavigationRow(
                                 name = directory.name,
                                 iconRes = folderIconResource(settings.folderIconSet),
                                 folderContentDescription = directory.name,
-                                onClick = { moveDestination = directory.path },
+                                onClick = { destinationPath = directory.path },
                             )
                         }
                     }
@@ -721,25 +726,29 @@ fun BrowserScreen(
             },
             confirmButton = {
                 TextButton(
-                    enabled = !mutating && moveDestination.isNotBlank(),
+                    enabled = !mutating && destinationPath.isNotBlank(),
                     onClick = {
                         val current = profile ?: return@TextButton
-                        val moving = selected.toList()
+                        val selectedItems = selected.toList()
                         mutating = true
                         scope.launch {
-                            withContext(Dispatchers.IO) { sessionRepository.move(current, moving, moveDestination) }
+                            val result = withContext(Dispatchers.IO) {
+                                if (operation == DestinationOperation.Copy) sessionRepository.copy(current, selectedItems, destinationPath)
+                                else sessionRepository.move(current, selectedItems, destinationPath)
+                            }
+                            result
                                 .onSuccess {
                                     selectedPaths = emptySet()
-                                    moveDialogOpen = false
+                                    destinationOperation = null
                                     refresh()
                                 }
                                 .onFailure { mutationError = it.message ?: it.toString() }
                             mutating = false
                         }
                     },
-                ) { Text(stringResource(R.string.move_here)) }
+                ) { Text(stringResource(if (operation == DestinationOperation.Copy) R.string.copy_here else R.string.move_here)) }
             },
-            dismissButton = { TextButton(onClick = { moveDialogOpen = false }, enabled = !mutating) { Text(stringResource(R.string.cancel)) } },
+            dismissButton = { TextButton(onClick = { destinationOperation = null }, enabled = !mutating) { Text(stringResource(R.string.cancel)) } },
         )
     }
 
@@ -804,30 +813,29 @@ fun BrowserScreen(
             })
         } else {
             AppBar(selected.size.toString(), onBack = { selectedPaths = emptySet() }, action = {
-                if (actions.canRename) IconButton(onClick = {
+                if (actions.canRename) SelectionActionIcon(AppIcons.Edit, stringResource(R.string.rename), onClick = {
                     renameValue = selected.single().name
                     renameDialogOpen = true
-                }, modifier = Modifier.size(48.dp)) {
-                    Icon(painterResource(AppIcons.Edit), stringResource(R.string.rename))
-                }
-                if (actions.canDownload) IconButton(onClick = {
+                })
+                if (actions.canDownload) SelectionActionIcon(AppIcons.Download, stringResource(R.string.download), onClick = {
                     if (selected.size == 1 && !selected.first().isDirectory) {
                         download(selected.first())
                     } else {
                         archiveItems = selected.toList()
                         archiveDialogOpen = true
                     }
-                }, modifier = Modifier.size(48.dp)) {
-                    Icon(painterResource(AppIcons.Download), stringResource(R.string.download))
-                }
-                if (actions.canShare) IconButton(onClick = { openShareDialog(selected.single()) }, modifier = Modifier.size(48.dp)) {
-                    Icon(painterResource(AppIcons.Share), stringResource(R.string.share))
-                }
-                if (actions.canMove) IconButton(onClick = { moveDestination = "/"; moveDialogOpen = true }, modifier = Modifier.size(48.dp)) {
-                    Icon(painterResource(AppIcons.Move), stringResource(R.string.move))
-                }
-                if (actions.canDelete) IconButton(onClick = {
-                    val current = profile ?: return@IconButton
+                })
+                if (actions.canCopy) SelectionActionIcon(AppIcons.Copy, stringResource(R.string.copy), onClick = {
+                    destinationPath = "/"
+                    destinationOperation = DestinationOperation.Copy
+                })
+                if (actions.canMove) SelectionActionIcon(AppIcons.Move, stringResource(R.string.move), onClick = {
+                    destinationPath = "/"
+                    destinationOperation = DestinationOperation.Move
+                })
+                if (actions.canShare) SelectionActionIcon(AppIcons.Share, stringResource(R.string.share), onClick = { openShareDialog(selected.single()) })
+                if (actions.canDelete) SelectionActionIcon(AppIcons.Delete, stringResource(R.string.delete), onClick = {
+                    val current = profile ?: return@SelectionActionIcon
                     mutating = true
                     scope.launch {
                         withContext(Dispatchers.IO) { sessionRepository.currentUser(current) }
@@ -849,9 +857,7 @@ fun BrowserScreen(
                             )
                         mutating = false
                     }
-                }, modifier = Modifier.size(48.dp)) {
-                    Icon(painterResource(AppIcons.Delete), stringResource(R.string.delete))
-                }
+                })
             })
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1111,6 +1117,13 @@ private fun ResourceGridCard(
 }
 
 @Composable
+private fun SelectionActionIcon(iconRes: Int, description: String, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
+        Icon(painterResource(iconRes), description, modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
 private fun ResourceVisual(
     item: RemoteResource,
     settings: AppSettings,
@@ -1132,8 +1145,11 @@ private fun ResourceVisual(
         return
     }
     val context = androidx.compose.ui.platform.LocalContext.current
-    val cacheFile = remember(profile.id, item.path) {
-        AppCacheManager.thumbnailFile(context, profile.id, item.path)
+    val cacheNamespace = remember(profile.id) {
+        ServerIdentityStore(context.applicationContext).get(profile.id)?.let { "${it.serverId}-${it.userId}" } ?: profile.id
+    }
+    val cacheFile = remember(cacheNamespace, item.path) {
+        AppCacheManager.thumbnailFile(context, cacheNamespace, item.path)
     }
     var bitmap by remember(cacheFile) { mutableStateOf<android.graphics.Bitmap?>(null) }
     LaunchedEffect(cacheFile) {

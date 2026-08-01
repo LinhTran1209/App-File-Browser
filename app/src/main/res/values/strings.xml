@@ -51,6 +51,9 @@
     <string name="new_folder">Th&#432; m&#7909;c m&#7899;i</string>
     <string name="upload_files">T&#7843;i t&#7879;p l&#234;n</string>
     <string name="move">Di chuy&#7875;n</string>
+    <string name="copy">Sao ch&#233;p</string>
+    <string name="copy_selected">Sao ch&#233;p c&#225;c m&#7909;c &#273;&#227; ch&#7885;n</string>
+    <string name="copy_here">Sao ch&#233;p t&#7899;i &#273;&#226;y</string>
     <string name="move_selected">Di chuy&#7875;n c&#225;c m&#7909;c &#273;&#227; ch&#7885;n</string>
     <string name="destination_folder">Th&#432; m&#7909;c &#273;&#237;ch</string>
     <string name="move_here">Di chuy&#7875;n t&#7899;i &#273;&#226;y</string>
