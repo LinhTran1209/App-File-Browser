@@ -9,13 +9,14 @@ import com.j2team.fileserver.feature.browser.BrowserPath
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 enum class DownloadConflict { Replace, KeepBoth, Cancel }
 
@@ -115,8 +116,18 @@ class TransferCoordinator(
     }
 
     fun retry(task: TransferTask) {
-        if (!canRetry(task)) return
-        val queued = transferStore.queueRetry(task.id) ?: return
+        resume(task)
+    }
+
+    fun pause(task: TransferTask) {
+        if (!canPause(task)) return
+        transferStore.pause(task.id) ?: return
+        TransferRuntime.jobs[task.id]?.cancel()
+    }
+
+    fun resume(task: TransferTask) {
+        if (!canResume(task)) return
+        val queued = transferStore.resume(task.id) ?: return
         when (queued.direction) {
             TransferDirection.Upload -> startUpload(queued)
             TransferDirection.Download -> startDownload(queued)
@@ -125,6 +136,11 @@ class TransferCoordinator(
 
     fun canRetry(task: TransferTask): Boolean =
         (task.state == TransferState.Failed || task.state == TransferState.Cancelled) && task.profileId == profile.id
+
+    fun canPause(task: TransferTask): Boolean = task.state == TransferState.Running && task.profileId == profile.id
+
+    fun canResume(task: TransferTask): Boolean =
+        (task.state == TransferState.Paused || canRetry(task)) && task.profileId == profile.id
 
     private suspend fun createDirectoryPlan(folder: DocumentFile, remoteParent: String, files: MutableList<Pair<DocumentFile, String>>) {
         val children = folder.listFiles().sortedBy { it.name.orEmpty() }
@@ -147,64 +163,87 @@ class TransferCoordinator(
         startUpload(task)
     }
 
-    private fun startUpload(task: TransferTask) = scope.launch {
+    private fun startUpload(task: TransferTask) {
+        val job = scope.launch {
         // File Browser on small servers can close one of multiple simultaneous POST bodies.
         // Serialize uploads while downloads keep their own two-stream allowance.
         uploadSemaphore.withPermit {
             var latest = transferStore.startIfQueued(task.id) ?: return@withPermit
+            var observedBytes = latest.transferredBytes
+            val progressGate = TransferProgressGate()
             try {
                 ensureUploadPermission(requiresCreate = false)
                 val uri = task.sourceUri?.let(Uri::parse) ?: throw IOException("Upload source is unavailable")
-                val temporary = File.createTempFile("upload-", ".part", context.cacheDir)
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        temporary.outputStream().buffered().use { output ->
-                            val buffer = ByteArray(8 * 1024)
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                output.write(buffer, 0, count)
-                            }
-                        }
-                    } ?: throw IOException("Unable to read ${task.name}")
-                    latest = transferStore.save(latest.copy(totalBytes = temporary.length()))
-                    // uploadOnce authenticates with a safe read, then deliberately sends this mutation once only.
-                    sessionRepository.uploadOnce(profile, latest.path, temporary, latest.name) { sent, total ->
-                        latest = transferStore.update(latest.id, sent.coerceAtMost(total), TransferState.Running) ?: latest
-                    }.getOrThrow()
-                    transferStore.update(latest.id, latest.totalBytes, TransferState.Completed)
-                } finally {
-                    temporary.delete()
-                }
+                val source = DocumentFile.fromSingleUri(context, uri) ?: throw IOException("Upload source is unavailable")
+                val totalBytes = source.length().takeIf { it >= 0L } ?: latest.totalBytes
+                latest = transferStore.save(latest.copy(totalBytes = totalBytes))
+                sessionRepository.uploadResumable(
+                    profile = profile,
+                    parentPath = latest.path,
+                    remoteName = latest.name,
+                    totalBytes = totalBytes,
+                    openSource = { context.contentResolver.openInputStream(uri) ?: throw IOException("Unable to read ${task.name}") },
+                    shouldContinue = { transferStore.all().firstOrNull { it.id == task.id }?.state == TransferState.Running },
+                ) { sent, total ->
+                    observedBytes = sent.coerceAtMost(total)
+                    val decision = progressGate.next()
+                    if (decision.publish) latest = transferStore.updateProgress(latest.id, observedBytes, total, decision.persist) ?: latest
+                }.getOrThrow()
+                transferStore.update(latest.id, totalBytes, TransferState.Completed)
             } catch (error: Throwable) {
                 val persisted = transferStore.all().firstOrNull { it.id == latest.id } ?: latest
-                transferStore.update(persisted.id, persisted.transferredBytes, TransferState.Failed, error.message ?: error.toString())
+                if (persisted.state == TransferState.Paused) {
+                    transferStore.save(persisted.copy(transferredBytes = observedBytes, error = null))
+                } else {
+                    transferStore.update(persisted.id, observedBytes, TransferState.Failed, error.message ?: error.toString())
+                }
             }
         }
+        }
+        TransferRuntime.jobs[task.id]?.cancel()
+        TransferRuntime.jobs[task.id] = job
     }
 
-    private fun startDownload(task: TransferTask) = scope.launch {
+    private fun startDownload(task: TransferTask) {
+        val job = scope.launch {
         streamSemaphore.withPermit {
             var latest = transferStore.startIfQueued(task.id) ?: return@withPermit
             var part: DocumentFile? = null
+            var completed = false
+            var observedBytes = latest.transferredBytes
+            val progressGate = TransferProgressGate()
             try {
                 val permissions = sessionRepository.currentPermissions(profile).getOrThrow()
                 if (!permissions.canDownload) throw SecurityException("Download is not permitted by the server")
                 val root = destinationRoot(task.sourceUri?.let(Uri::parse) ?: throw IOException("Download destination is unavailable"))
-                part = root.createFile("application/octet-stream", ".${task.name}.part")
+                val partName = ".${task.name}.part"
+                part = root.findFile(partName) ?: root.createFile("application/octet-stream", partName)
                     ?: throw IOException("Unable to create temporary download")
-                val openPart = {
-                    context.contentResolver.openOutputStream(part.uri, "w") ?: throw IOException("Unable to write temporary download")
+                var startOffset = part.length().coerceAtLeast(0L)
+                if (task.archivePaths.isNotEmpty()) {
+                    if (startOffset > 0L) {
+                        part.delete()
+                        part = root.createFile("application/octet-stream", partName)
+                            ?: throw IOException("Unable to recreate temporary download")
+                    }
+                    startOffset = 0L
+                }
+                val activePart = part
+                val openPart: (Boolean) -> java.io.OutputStream = { append ->
+                    context.contentResolver.openOutputStream(activePart.uri, if (append) "wa" else "w")
+                        ?: throw IOException("Unable to write temporary download")
                 }
                 val progress: (Long, Long) -> Unit = { copied, total ->
                     val reportedTotal = total.takeIf { it > 0 } ?: latest.totalBytes
                     val safeTotal = maxOf(reportedTotal, copied)
-                    latest = transferStore.save(latest.copy(totalBytes = safeTotal, transferredBytes = copied))
+                    observedBytes = copied
+                    val decision = progressGate.next()
+                    if (decision.publish) latest = transferStore.updateProgress(latest.id, copied, safeTotal, decision.persist) ?: latest
                 }
                 if (task.archivePaths.isNotEmpty() && task.archiveAlgorithm != null) {
-                    sessionRepository.downloadArchiveTo(profile, task.archivePaths, task.archiveAlgorithm, openPart, progress).getOrThrow()
+                    sessionRepository.downloadArchiveTo(profile, task.archivePaths, task.archiveAlgorithm, { openPart(false) }, progress).getOrThrow()
                 } else {
-                    sessionRepository.downloadTo(profile, task.path, openPart, progress).getOrThrow()
+                    sessionRepository.downloadTo(profile, task.path, startOffset, openPart, progress).getOrThrow()
                 }
                 // Preserve the old file until staging has succeeded. Rename it aside so a finalization failure can restore it.
                 val backupName = ".${task.name}.${task.id}.${UUID.randomUUID()}.backup"
@@ -216,9 +255,9 @@ class TransferCoordinator(
                 }
                 try {
                     val final = root.createFile("application/octet-stream", task.name) ?: throw IOException("Unable to create final download")
-                    context.contentResolver.openInputStream(part.uri)?.use { input ->
+                    context.contentResolver.openInputStream(activePart.uri)?.use { input ->
                         context.contentResolver.openOutputStream(final.uri, "w")?.use { output ->
-                        val buffer = ByteArray(8 * 1024)
+                        val buffer = ByteArray(256 * 1024)
                         while (true) {
                             val count = input.read(buffer)
                             if (count < 0) break
@@ -233,14 +272,22 @@ class TransferCoordinator(
                     if (!partialDeleted || !restored) throw IOException("${error.message ?: "Unable to finalize download"}; old file retained at $backupName", error)
                     throw error
                 }
-                transferStore.update(latest.id, latest.totalBytes.coerceAtLeast(latest.transferredBytes), TransferState.Completed)
+                transferStore.update(latest.id, maxOf(latest.totalBytes, observedBytes), TransferState.Completed)
+                completed = true
             } catch (error: Throwable) {
                 val persisted = transferStore.all().firstOrNull { it.id == latest.id } ?: latest
-                transferStore.update(persisted.id, persisted.transferredBytes, TransferState.Failed, error.message ?: error.toString())
+                if (persisted.state == TransferState.Paused) {
+                    transferStore.save(persisted.copy(transferredBytes = observedBytes, error = null))
+                } else {
+                    transferStore.update(persisted.id, observedBytes, TransferState.Failed, error.message ?: error.toString())
+                }
             } finally {
-                part?.delete()
+                if (completed) part?.delete()
             }
         }
+        }
+        TransferRuntime.jobs[task.id]?.cancel()
+        TransferRuntime.jobs[task.id] = job
     }
 
     private suspend fun ensureUploadPermission(requiresCreate: Boolean) {
@@ -269,4 +316,5 @@ object TransferRuntime {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val streamSemaphore = Semaphore(2)
     val uploadSemaphore = Semaphore(1)
+    val jobs = ConcurrentHashMap<String, Job>()
 }

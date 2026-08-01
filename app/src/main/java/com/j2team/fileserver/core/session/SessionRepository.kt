@@ -17,6 +17,7 @@ import com.j2team.fileserver.feature.sync.SyncEntry
 import com.j2team.fileserver.feature.sync.ServerIdentityStore
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 
@@ -104,10 +105,11 @@ class SessionRepository(
     suspend fun downloadTo(
         profile: ServerProfile,
         remotePath: String,
-        openDestination: () -> OutputStream,
+        startOffset: Long = 0L,
+        openDestination: (append: Boolean) -> OutputStream,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
     ): Result<Unit> = authenticated(profile) { token ->
-        transport.downloadToResult(profile, token, remotePath, openDestination, onProgress)
+        transport.downloadToResult(profile, token, remotePath, startOffset, openDestination, onProgress)
     }
 
     private fun bindIdentity(profile: ServerProfile, token: String) {
@@ -323,6 +325,19 @@ class SessionRepository(
     ): Result<String> {
         val token = mutationToken(profile).getOrElse { return Result.failure(it) }
         return transport.upload(profile, token, parentPath, file, remoteName, onProgress)
+    }
+
+    suspend fun uploadResumable(
+        profile: ServerProfile,
+        parentPath: String,
+        remoteName: String,
+        totalBytes: Long,
+        openSource: () -> InputStream,
+        shouldContinue: () -> Boolean,
+        onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null,
+    ): Result<String> {
+        val token = mutationToken(profile).getOrElse { return Result.failure(it) }
+        return transport.uploadResumable(profile, token, parentPath, remoteName, totalBytes, openSource, shouldContinue, onProgress)
     }
 
     private suspend fun mutationToken(profile: ServerProfile): Result<String> =

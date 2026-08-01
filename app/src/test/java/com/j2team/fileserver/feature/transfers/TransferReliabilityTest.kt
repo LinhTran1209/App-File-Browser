@@ -11,6 +11,25 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withPermit
 
 class TransferReliabilityTest {
+    @Test fun progressGatePublishesOftenButPersistsSparingly() {
+        var now = 0L
+        val gate = TransferProgressGate(uiIntervalNanos = 200L, persistIntervalNanos = 2_000L) { now }
+
+        assertEquals(ProgressDecision(publish = true, persist = true), gate.next())
+        now = 100L
+        assertEquals(ProgressDecision(publish = false, persist = false), gate.next())
+        now = 250L
+        assertEquals(ProgressDecision(publish = true, persist = false), gate.next())
+        now = 2_100L
+        assertEquals(ProgressDecision(publish = true, persist = true), gate.next())
+    }
+
+    @Test fun forcedProgressAlwaysPublishesAndPersists() {
+        val gate = TransferProgressGate(clock = { 1L })
+        gate.next()
+        assertEquals(ProgressDecision(publish = true, persist = true), gate.next(force = true))
+    }
+
     @Test fun failedRestoreKeepsOwnedBackupAndRetryDoesNotDeleteIt() {
         val first = BackupFinalizer.recoverAfterCopyFailure(partialDeleted = false, restored = false, backupName = ".old.attempt.backup")
         assertEquals(".old.attempt.backup", first.recoveryBackup)

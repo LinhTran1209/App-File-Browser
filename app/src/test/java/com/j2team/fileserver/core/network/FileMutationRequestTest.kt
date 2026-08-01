@@ -3,6 +3,7 @@ package com.j2team.fileserver.core.network
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.model.ServerUser
 import java.io.ByteArrayOutputStream
+import java.io.ByteArrayInputStream
 import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -18,8 +19,100 @@ import org.json.JSONObject
 import com.sun.net.httpserver.HttpServer
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 
 class FileMutationRequestTest {
+    @Test
+    fun rangedDownloadAppendsFromExistingOffset() = runTest {
+        val payload = ByteArray(1024 * 1024) { (it % 251).toByte() }
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                assertEquals("bytes=4096-", exchange.requestHeaders.getFirst("Range"))
+                exchange.responseHeaders.add("Content-Range", "bytes 4096-${payload.lastIndex}/${payload.size}")
+                exchange.sendResponseHeaders(206, (payload.size - 4096).toLong())
+                exchange.responseBody.use { it.write(payload, 4096, payload.size - 4096) }
+            }
+            start()
+        }
+        try {
+            val destination = ByteArrayOutputStream().apply { write(payload, 0, 4096) }
+            var appendMode = false
+            val result = FileBrowserClient().downloadToResult(profile(server), "token", "/large.bin", 4096, { append ->
+                appendMode = append
+                destination
+            })
+
+            assertTrue(result.toResult().isSuccess)
+            assertTrue(appendMode)
+            assertTrue(payload.contentEquals(destination.toByteArray()))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun tusUploadContinuesFromServerOffsetAfterInterruption() {
+        val completedChunk = 32 * 1024 * 1024
+        val payload = ByteArray(completedChunk + 1024 * 1024) { (it % 239).toByte() }
+        val received = ByteArrayOutputStream()
+        val registered = AtomicBoolean(false)
+        val methods = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            createContext("/") { exchange ->
+                methods += exchange.requestMethod
+                val effectiveMethod = exchange.requestHeaders.getFirst("X-HTTP-Method-Override") ?: exchange.requestMethod
+                when (effectiveMethod) {
+                    "POST" -> {
+                        registered.set(true)
+                        received.reset()
+                        exchange.responseHeaders.add("Location", exchange.requestURI.rawPath)
+                        exchange.sendResponseHeaders(201, -1)
+                    }
+                    "HEAD" -> {
+                        if (!registered.get()) exchange.sendResponseHeaders(404, -1) else {
+                            exchange.responseHeaders.add("Upload-Offset", received.size().toString())
+                            exchange.responseHeaders.add("Upload-Length", payload.size.toString())
+                            exchange.sendResponseHeaders(200, -1)
+                        }
+                    }
+                    "PATCH" -> {
+                        assertEquals(received.size().toString(), exchange.requestHeaders.getFirst("Upload-Offset"))
+                        val buffer = ByteArray(64 * 1024)
+                        runCatching {
+                            while (true) {
+                                val count = exchange.requestBody.read(buffer)
+                                if (count < 0) break
+                                received.write(buffer, 0, count)
+                            }
+                        }
+                        exchange.responseHeaders.add("Upload-Offset", received.size().toString())
+                        runCatching { exchange.sendResponseHeaders(204, -1) }
+                    }
+                }
+                exchange.close()
+            }
+            start()
+        }
+        try {
+            val keepGoing = AtomicBoolean(true)
+            val first = FileBrowserClient().uploadResumable(
+                profile(server), "token", "/", "large.bin", payload.size.toLong(),
+                { ByteArrayInputStream(payload) }, { keepGoing.get() },
+            ) { sent, _ -> if (sent >= completedChunk + 512 * 1024) keepGoing.set(false) }
+            assertTrue(first.isFailure)
+            assertTrue("received=${received.size()} payload=${payload.size} methods=$methods error=${first.exceptionOrNull()}", received.size() in 1 until payload.size)
+
+            val resumed = FileBrowserClient().uploadResumable(
+                profile(server), "token", "/", "large.bin", payload.size.toLong(),
+                { ByteArrayInputStream(payload) }, { true },
+            )
+            assertTrue(resumed.isSuccess)
+            assertTrue(payload.contentEquals(received.toByteArray()))
+        } finally {
+            server.stop(0)
+        }
+    }
+
     @Test
     fun authenticatedRequestsDoNotFollowRedirects() = runTest {
         val redirectedRequests = AtomicInteger()

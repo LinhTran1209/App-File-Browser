@@ -36,6 +36,9 @@ import java.util.concurrent.atomic.AtomicReference
 
 data class PreviewProbe(val mimeType: String?, val sample: ByteArray)
 
+private const val NETWORK_BUFFER_SIZE = 256 * 1024
+private const val TUS_CHUNK_SIZE = 32L * 1024L * 1024L
+
 /** Atomically pairs cancellation with publication of resources that must be closed. */
 internal class CancellableRequestOwner {
     private val cancelled = AtomicBoolean(false)
@@ -90,7 +93,7 @@ class FileBrowserClient {
         try {
             connection.inputStream.use { input ->
                 temporary.outputStream().buffered().use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    val buffer = ByteArray(NETWORK_BUFFER_SIZE)
                     while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
@@ -115,11 +118,12 @@ class FileBrowserClient {
         profile: ServerProfile,
         token: String? = null,
         remotePath: String,
-        openDestination: () -> OutputStream,
+        startOffset: Long = 0L,
+        openDestination: (append: Boolean) -> OutputStream,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
     ): ApiResult<Unit> {
         require(remotePath.isNotBlank()) { "Remote path is required" }
-        return streamDownloadToResult(rawUrl(profile, remotePath), token, openDestination, onProgress)
+        return streamDownloadToResult(rawUrl(profile, remotePath), token, startOffset, openDestination, onProgress)
     }
 
     suspend fun downloadArchiveToResult(
@@ -131,13 +135,14 @@ class FileBrowserClient {
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null,
     ): ApiResult<Unit> {
         require(remotePaths.isNotEmpty()) { "At least one remote path is required" }
-        return streamDownloadToResult(archiveUrl(profile, remotePaths, algorithm), token, openDestination, onProgress)
+        return streamDownloadToResult(archiveUrl(profile, remotePaths, algorithm), token, 0L, { openDestination() }, onProgress)
     }
 
     private suspend fun streamDownloadToResult(
         url: String,
         token: String?,
-        openDestination: () -> OutputStream,
+        startOffset: Long,
+        openDestination: (append: Boolean) -> OutputStream,
         onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)?,
     ): ApiResult<Unit> = suspendCancellableCoroutine { continuation ->
         val activeConnection = AtomicReference<HttpURLConnection?>(null)
@@ -166,15 +171,19 @@ class FileBrowserClient {
                 if (!requestOwner.publish(closeActiveRequest)) return@Runnable
                 if (requestOwner.isCancelled()) return@Runnable
                 applyAuthorization(connection, token)
+                if (startOffset > 0L) connection.setRequestProperty("Range", "bytes=$startOffset-")
                 val code = connection.responseCode
                 if (code !in 200..299) ApiResult(code, error = IOException("Download failed ($code)")) else {
-                    val total = connection.contentLengthLong
-                    var copied = 0L
+                    val append = startOffset > 0L && code == HttpURLConnection.HTTP_PARTIAL
+                    val base = if (append) startOffset else 0L
+                    val responseLength = connection.contentLengthLong
+                    val total = if (responseLength > 0L) base + responseLength else -1L
+                    var copied = base
                     connection.inputStream.use { input ->
                         activeInput.set(input)
-                        openDestination().use { output ->
+                        openDestination(append).use { output ->
                             activeOutput.set(output)
-                            val buffer = ByteArray(8 * 1024)
+                            val buffer = ByteArray(NETWORK_BUFFER_SIZE)
                             while (continuation.isActive) {
                                 val count = input.read(buffer)
                                 if (count < 0) break
@@ -207,7 +216,7 @@ class FileBrowserClient {
             if (code !in 200..299) return ApiResult(code, error = IOException("Preview probe failed ($code)"))
             val sample = connection.inputStream.use { input ->
                 val output = ByteArrayOutputStream(maxBytes)
-                val buffer = ByteArray(minOf(8 * 1024, maxBytes))
+                val buffer = ByteArray(minOf(NETWORK_BUFFER_SIZE, maxBytes))
                 while (output.size() < maxBytes) {
                     val count = input.read(buffer, 0, minOf(buffer.size, maxBytes - output.size()))
                     if (count < 0) break
@@ -247,7 +256,7 @@ class FileBrowserClient {
         connection.setFixedLengthStreamingMode(total)
         connection.outputStream.use { output ->
             FileInputStream(file).use { input ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                val buffer = ByteArray(NETWORK_BUFFER_SIZE)
                 var sent = 0L
                 while (true) {
                     val count = input.read(buffer)
@@ -263,6 +272,111 @@ class FileBrowserClient {
         val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
         require(code in 200..299) { "Upload failed ($code)" }
         body
+    }
+
+    /** Uploads through File Browser's TUS endpoint so a retry can continue at the server offset. */
+    fun uploadResumable(
+        profile: ServerProfile,
+        token: String? = null,
+        parentPath: String = "/",
+        remoteName: String,
+        totalBytes: Long,
+        openSource: () -> InputStream,
+        shouldContinue: () -> Boolean = { true },
+        onProgress: ((bytesSent: Long, totalBytes: Long) -> Unit)? = null,
+    ): Result<String> = runCatching {
+        require(totalBytes >= 0L) { "Upload size is unavailable" }
+        val destinationPath = parentPath.trimEnd('/') + "/" + remoteName
+        val uploadUrl = apiUrl(profile, "/api/tus", destinationPath)
+
+        var offset = tusOffset(uploadUrl, token, totalBytes) ?: run {
+            val create = open("$uploadUrl?override=true", "POST").apply {
+                setRequestProperty("Upload-Length", totalBytes.toString())
+                setRequestProperty("Tus-Resumable", "1.0.0")
+                applyAuthorization(this, token)
+            }
+            try {
+                val code = create.responseCode
+                require(code == HttpURLConnection.HTTP_CREATED) { "Unable to start resumable upload ($code)" }
+            } finally {
+                create.disconnect()
+            }
+            0L
+        }
+        require(offset in 0L..totalBytes) { "Invalid server upload offset: $offset" }
+        onProgress?.invoke(offset, totalBytes)
+
+        openSource().buffered(NETWORK_BUFFER_SIZE).use { input ->
+            skipFully(input, offset)
+            while (offset < totalBytes) {
+                if (!shouldContinue()) throw IOException("Upload paused")
+                val chunkLength = minOf(TUS_CHUNK_SIZE, totalBytes - offset)
+                // HttpURLConnection rejects PATCH on some Android/JVM implementations.
+                // The mod accepts this standard override before its normal TUS POST route.
+                val patch = open(uploadUrl, "POST").apply {
+                    doOutput = true
+                    readTimeout = 60_000
+                    setRequestProperty("X-HTTP-Method-Override", "PATCH")
+                    setRequestProperty("Content-Type", "application/offset+octet-stream")
+                    setRequestProperty("Upload-Offset", offset.toString())
+                    setRequestProperty("Tus-Resumable", "1.0.0")
+                    applyAuthorization(this, token)
+                    setFixedLengthStreamingMode(chunkLength)
+                }
+                var written = 0L
+                try {
+                    patch.outputStream.buffered(NETWORK_BUFFER_SIZE).use { output ->
+                        val buffer = ByteArray(NETWORK_BUFFER_SIZE)
+                        while (written < chunkLength) {
+                            if (!shouldContinue()) throw IOException("Upload paused")
+                            val count = input.read(buffer, 0, minOf(buffer.size.toLong(), chunkLength - written).toInt())
+                            if (count < 0) throw IOException("Upload source ended before $totalBytes bytes")
+                            output.write(buffer, 0, count)
+                            written += count
+                            onProgress?.invoke(offset + written, totalBytes)
+                        }
+                    }
+                    val code = patch.responseCode
+                    require(code == HttpURLConnection.HTTP_NO_CONTENT) { "Resumable upload failed ($code)" }
+                    offset = patch.getHeaderField("Upload-Offset")?.toLongOrNull() ?: offset + written
+                } finally {
+                    patch.disconnect()
+                }
+            }
+        }
+        destinationPath
+    }
+
+    private fun tusOffset(url: String, token: String?, expectedLength: Long): Long? {
+        val head = open(url, "HEAD").apply {
+            setRequestProperty("Tus-Resumable", "1.0.0")
+            applyAuthorization(this, token)
+        }
+        return try {
+            when (val code = head.responseCode) {
+                HttpURLConnection.HTTP_OK -> {
+                    val length = head.getHeaderField("Upload-Length")?.toLongOrNull()
+                    if (length == expectedLength) head.getHeaderField("Upload-Offset")?.toLongOrNull() else null
+                }
+                HttpURLConnection.HTTP_NOT_FOUND -> null
+                else -> throw IOException("Unable to inspect resumable upload ($code)")
+            }
+        } finally {
+            head.disconnect()
+        }
+    }
+
+    private fun skipFully(input: InputStream, byteCount: Long) {
+        var remaining = byteCount
+        while (remaining > 0L) {
+            val skipped = input.skip(remaining)
+            if (skipped > 0L) {
+                remaining -= skipped
+            } else {
+                if (input.read() < 0) throw IOException("Upload source is shorter than the saved server offset")
+                remaining--
+            }
+        }
     }
 
     suspend fun createDirectory(profile: ServerProfile, token: String? = null, path: String): Result<Unit> = runCatching {

@@ -62,6 +62,30 @@ class TransferStore(context: Context, preferencesName: String = "transfer_queue"
     fun update(id: String, transferredBytes: Long, state: TransferState? = null, error: String? = null): TransferTask? =
         all().firstOrNull { it.id == id }?.let { save(it.copy(transferredBytes = transferredBytes, state = state ?: it.state, error = error)) }
 
+    /** Updates the visible progress without forcing a flash write for every network buffer. */
+    @Synchronized
+    fun updateProgress(id: String, transferredBytes: Long, totalBytes: Long, persistNow: Boolean): TransferTask? {
+        val current = all().firstOrNull { it.id == id } ?: return null
+        val updated = current.copy(
+            transferredBytes = transferredBytes.coerceAtLeast(0L),
+            totalBytes = maxOf(totalBytes, transferredBytes, current.totalBytes),
+            updatedAt = System.currentTimeMillis(),
+        )
+        val items = all().filterNot { it.id == id } + updated
+        if (persistNow) persist(items)
+        _tasks.value = items.sortedByDescending { it.updatedAt }
+        return updated
+    }
+
+    @Synchronized
+    fun pause(id: String): TransferTask? = all().firstOrNull { it.id == id && it.state == TransferState.Running }
+        ?.let { save(it.copy(state = TransferState.Paused, error = null)) }
+
+    @Synchronized
+    fun resume(id: String): TransferTask? = all().firstOrNull {
+        it.id == id && (it.state == TransferState.Paused || it.state == TransferState.Failed || it.state == TransferState.Cancelled)
+    }?.let { save(it.copy(state = TransferState.Queued, error = null)) }
+
     @Synchronized
     fun queueRetry(id: String): TransferTask? = all().firstOrNull { it.id == id && (it.state == TransferState.Failed || it.state == TransferState.Cancelled) }
         ?.let { save(it.copy(state = TransferState.Queued, error = null)) }

@@ -77,6 +77,8 @@
     <string name="media_external_error">Couldn\'t open the media file in another app.</string>
     <string name="media_play">Play</string>
     <string name="media_pause">Pause</string>
+    <string name="transfer_pause">Pause</string>
+    <string name="transfer_resume">Resume</string>
     <string name="media_loading">Loading media</string>
     <string name="media_seek">Playback position</string>
     <string name="name">Name</string>

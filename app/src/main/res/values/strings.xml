@@ -77,6 +77,8 @@
     <string name="media_external_error">Kh&#244;ng th&#7875; m&#7903; t&#7879;p &#273;a ph&#432;&#417;ng ti&#7879;n b&#7857;ng &#7913;ng d&#7909;ng kh&#225;c.</string>
     <string name="media_play">Ph&#225;t</string>
     <string name="media_pause">T&#7841;m d&#7915;ng</string>
+    <string name="transfer_pause">T&#7841;m d&#7915;ng</string>
+    <string name="transfer_resume">Ti&#7871;p t&#7909;c</string>
     <string name="media_loading">&#272;ang t&#7843;i media</string>
     <string name="media_seek">V&#7883; tr&#237; ph&#225;t</string>
     <string name="name">T&#234;n</string>

@@ -73,6 +73,10 @@ fun TransfersScreen(store: TransferStore, coordinator: TransferCoordinator?, onB
                     TransferRow(
                         task,
                         canRetry = coordinator?.canRetry(task) == true,
+                        canPause = coordinator?.canPause(task) == true,
+                        canResume = coordinator?.canResume(task) == true,
+                        onPause = { coordinator?.pause(task) },
+                        onResume = { coordinator?.resume(task) },
                         onRetry = { coordinator?.retry(task) },
                         onDismiss = { store.remove(task.id) },
                         onOpen = { openDownloadedItem(context, task) },
@@ -84,7 +88,17 @@ fun TransfersScreen(store: TransferStore, coordinator: TransferCoordinator?, onB
 }
 
 @Composable
-private fun TransferRow(task: TransferTask, canRetry: Boolean, onRetry: () -> Unit, onDismiss: () -> Unit, onOpen: () -> Unit) {
+private fun TransferRow(
+    task: TransferTask,
+    canRetry: Boolean,
+    canPause: Boolean,
+    canResume: Boolean,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    onOpen: () -> Unit,
+) {
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = if (task.state == TransferState.Failed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surface),
@@ -99,8 +113,18 @@ private fun TransferRow(task: TransferTask, canRetry: Boolean, onRetry: () -> Un
             LinearProgressIndicator(progress = { task.progress }, modifier = Modifier.fillMaxWidth())
             Text("${formatBytes(task.transferredBytes)} / ${formatBytes(task.totalBytes)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             task.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-            if (task.state == TransferState.Failed || task.state == TransferState.Cancelled) {
-                Row { TextButton(onClick = onRetry, enabled = canRetry) { Text("Retry") }; TextButton(onClick = onDismiss) { Text(stringResource(R.string.dismiss)) } }
+            if (task.state == TransferState.Running) {
+                Row { TextButton(onClick = onPause, enabled = canPause) { Text(stringResource(R.string.transfer_pause)) } }
+            } else if (task.state == TransferState.Paused) {
+                Row {
+                    TextButton(onClick = onResume, enabled = canResume) { Text(stringResource(R.string.transfer_resume)) }
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.dismiss)) }
+                }
+            } else if (task.state == TransferState.Failed || task.state == TransferState.Cancelled) {
+                Row {
+                    TextButton(onClick = onRetry, enabled = canRetry) { Text(stringResource(R.string.transfer_resume)) }
+                    TextButton(onClick = onDismiss) { Text(stringResource(R.string.dismiss)) }
+                }
             } else if (task.state == TransferState.Completed) {
                 Row {
                     if (task.direction == TransferDirection.Download && task.sourceUri != null) {

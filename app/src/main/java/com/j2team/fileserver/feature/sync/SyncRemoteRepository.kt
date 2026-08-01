@@ -29,7 +29,7 @@ class SyncRemoteRepository(private val transport: FileBrowserClient, rawToken: S
         transport.upload(profile, token, parent, file, name)
 
     suspend fun download(profile: ServerProfile, path: String, openDestination: () -> OutputStream): Result<Unit> =
-        transport.downloadToResult(profile, token, path, openDestination).toResult()
+        transport.downloadToResult(profile, token, path, 0L, { openDestination() }).toResult()
 
     fun revoke(profile: ServerProfile): Result<Unit> = transport.revokeSyncTokenResult(profile, token.removePrefix("sync:")).toResult()
 }
