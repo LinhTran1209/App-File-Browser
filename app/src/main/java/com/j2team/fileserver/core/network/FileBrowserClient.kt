@@ -841,6 +841,82 @@ class FileBrowserClient {
         if (code !in 200..299) ApiResult(code, error = IOException("Unable to revoke sync token ($code)")) else ApiResult(code, Unit)
     } catch (error: Throwable) { ApiResult(-1, error = error) }
 
+    fun fetchVideoSubtitlesResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+    ): ApiResult<String> = try {
+        val cleanPath = remotePath.trim().let { if (it.startsWith("/")) it else "/$it" }
+        val encodedPath = java.net.URLEncoder.encode(cleanPath, Charsets.UTF_8.name()).replace("+", "%20")
+        val url = profile.endpoint.trimEnd('/') + "/api/video-subtitles?path=" + encodedPath
+        val connection = open(url, "GET")
+        applyAuthorization(connection, token)
+        connection.connectTimeout = 8_000
+        connection.readTimeout = 8_000
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            val fallbackUrl = apiUrl(profile, "/api/video-subtitles", remotePath)
+            val fbConn = open(fallbackUrl, "GET")
+            applyAuthorization(fbConn, token)
+            fbConn.connectTimeout = 8_000
+            fbConn.readTimeout = 8_000
+            val fbCode = fbConn.responseCode
+            if (fbCode in 200..299) {
+                val body = fbConn.inputStream.bufferedReader().use { it.readText() }
+                ApiResult(fbCode, body)
+            } else {
+                ApiResult(code, error = IOException("Unable to fetch video subtitles ($code)"))
+            }
+        } else {
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            ApiResult(code, body)
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun fetchUrlContentResult(
+        profile: ServerProfile,
+        token: String?,
+        urlPathOrFull: String,
+    ): ApiResult<String> = try {
+        val fullUrl = if (urlPathOrFull.startsWith("http://") || urlPathOrFull.startsWith("https://")) {
+            urlPathOrFull
+        } else {
+            profile.endpoint.trimEnd('/') + "/" + urlPathOrFull.trimStart('/')
+        }
+        val safeUrl = encodeUrlSafely(fullUrl)
+        val connection = open(safeUrl, "GET")
+        applyAuthorization(connection, token)
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 10_000
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            ApiResult(code, error = IOException("Unable to fetch content ($code)"))
+        } else {
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            ApiResult(code, body)
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    private fun encodeUrlSafely(rawUrl: String): String = try {
+        val url = java.net.URL(rawUrl)
+        val uri = java.net.URI(
+            url.protocol,
+            url.userInfo,
+            url.host,
+            url.port,
+            url.path,
+            url.query,
+            url.ref
+        )
+        uri.toASCIIString()
+    } catch (_: Exception) {
+        rawUrl
+    }
+
     private fun apiUrl(profile: ServerProfile, apiPath: String, path: String): String {
         val cleanPath = path.trim().let { if (it.isEmpty() || it == "/") "/" else if (it.startsWith("/")) it else "/$it" }
         return profile.endpoint.trimEnd('/') + apiPath + encodePath(cleanPath)

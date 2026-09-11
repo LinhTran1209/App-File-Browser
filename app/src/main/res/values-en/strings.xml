@@ -218,4 +218,11 @@
     <string name="forward_5s">5s »</string>
     <string name="subtitles">Subtitles</string>
     <string name="subtitles_off">Off</string>
+    <string name="audio_tracks">Audio</string>
+    <string name="audio_original">Original</string>
+    <string name="audio_dubbing">Dubbed / Voiceover</string>
+    <string name="subtitle_position">Subtitle position</string>
+    <string name="sub_pos_high">High</string>
+    <string name="sub_pos_medium">Medium</string>
+    <string name="sub_pos_low">Low</string>
 </resources>

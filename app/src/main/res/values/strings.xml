@@ -218,4 +218,11 @@
     <string name="forward_5s">5s »</string>
     <string name="subtitles">Phụ đề</string>
     <string name="subtitles_off">Tắt phụ đề</string>
+    <string name="audio_tracks">Âm thanh</string>
+    <string name="audio_original">Tiếng gốc</string>
+    <string name="audio_dubbing">Thuyết minh</string>
+    <string name="subtitle_position">Độ cao phụ đề</string>
+    <string name="sub_pos_high">Cao</string>
+    <string name="sub_pos_medium">Vừa</string>
+    <string name="sub_pos_low">Thấp</string>
 </resources>

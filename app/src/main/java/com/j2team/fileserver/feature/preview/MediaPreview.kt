@@ -11,6 +11,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,7 +45,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
@@ -62,10 +65,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
@@ -78,9 +83,12 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
@@ -219,6 +227,64 @@ internal suspend fun requestVideoThumbnailOffMain(
 ) = withContext(dispatcher) { request() }
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
+internal data class AppAudioTrack(
+    val group: Tracks.Group,
+    val trackIndex: Int,
+    val name: String,
+    val isSelected: Boolean,
+)
+
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
+private fun extractAudioTracks(
+    tracks: Tracks,
+    originalLabel: String,
+    dubbingLabel: String,
+): List<AppAudioTrack> {
+    val result = mutableListOf<AppAudioTrack>()
+    var audioIdx = 0
+    for (group in tracks.groups) {
+        if (group.type == C.TRACK_TYPE_AUDIO) {
+            for (i in 0 until group.length) {
+                if (group.isTrackSupported(i)) {
+                    val format = group.getTrackFormat(i)
+                    val lang = format.language ?: ""
+                    val label = format.label
+                    val name = when {
+                        !label.isNullOrBlank() -> label
+                        lang.equals("vie", ignoreCase = true) || lang.equals("vi", ignoreCase = true) -> "$dubbingLabel (${lang.uppercase()})"
+                        audioIdx == 0 -> originalLabel
+                        lang.isNotBlank() -> "$originalLabel (${lang.uppercase()})"
+                        else -> "Audio ${audioIdx + 1}"
+                    }
+                    result.add(
+                        AppAudioTrack(
+                            group = group,
+                            trackIndex = i,
+                            name = name,
+                            isSelected = group.isTrackSelected(i),
+                        )
+                    )
+                    audioIdx++
+                }
+            }
+        }
+    }
+    return result
+}
+
+internal data class AppSubtitleTrack(
+    val id: String,
+    val name: String,
+    val type: String, // "embedded" or "external"
+    val url: String = "",
+    val path: String = "",
+)
+
+internal enum class SubtitlePosition {
+    LOW,
+    MEDIUM,
+    HIGH,
+}
 
 internal data class SubtitleCue(
     val startMs: Long,
@@ -298,27 +364,62 @@ internal fun MediaPreview(
         }
     }
 
-    var availableSubtitles by remember(profile.id, item.path) { mutableStateOf<List<RemoteResource>>(emptyList()) }
-    var selectedSubtitle by remember(profile.id, item.path) { mutableStateOf<RemoteResource?>(null) }
+    var availableSubtitles by remember(profile.id, item.path) { mutableStateOf<List<AppSubtitleTrack>>(emptyList()) }
+    var selectedSubtitle by remember(profile.id, item.path) { mutableStateOf<AppSubtitleTrack?>(null) }
     var subtitleCues by remember(selectedSubtitle) { mutableStateOf<List<SubtitleCue>>(emptyList()) }
     var subtitlesEnabled by remember(profile.id, item.path) { mutableStateOf(true) }
+    var subtitlePosition by rememberSaveable(profile.id, item.path) { mutableStateOf(SubtitlePosition.LOW) }
 
-    // Auto-detect sibling subtitles in parent directory
+    // Auto-detect subtitles: first try server /api/video-subtitles, then fallback to sibling files
     LaunchedEffect(profile.id, item.path, mimeType) {
         if (mimeType?.startsWith("video/") == true) {
             withContext(Dispatchers.IO) {
-                val parentDir = item.path.substringBeforeLast('/', "/").ifEmpty { "/" }
-                val baseName = item.name.substringBeforeLast('.')
-                sessionRepository.list(profile, parentDir).onSuccess { siblings ->
-                    val subs = siblings.filter { sib ->
-                        !sib.isDirectory &&
-                        (sib.name.endsWith(".srt", ignoreCase = true) || sib.name.endsWith(".vtt", ignoreCase = true)) &&
-                        (sib.name.startsWith(baseName, ignoreCase = true) || siblings.count { it.name.endsWith(".srt", true) || it.name.endsWith(".vtt", true) } == 1)
+                var foundSubtitles = emptyList<AppSubtitleTrack>()
+                // 1. Try server API
+                sessionRepository.fetchVideoSubtitles(profile, item.path).onSuccess { jsonStr ->
+                    try {
+                        val json = org.json.JSONObject(jsonStr)
+                        val subArray = json.optJSONArray("subtitles")
+                        if (subArray != null && subArray.length() > 0) {
+                            val list = mutableListOf<AppSubtitleTrack>()
+                            for (i in 0 until subArray.length()) {
+                                val itemObj = subArray.getJSONObject(i)
+                                val name = itemObj.optString("name", "Phụ đề")
+                                val type = itemObj.optString("type", "embedded")
+                                val url = itemObj.optString("url", "")
+                                val index = itemObj.optInt("index", i)
+                                val id = if (url.isNotBlank()) url else "${type}_$index"
+                                list.add(AppSubtitleTrack(id = id, name = name, type = type, url = url))
+                            }
+                            foundSubtitles = list
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                // 2. Fallback to sibling files if no subtitles from server API
+                if (foundSubtitles.isEmpty()) {
+                    val parentDir = item.path.substringBeforeLast('/', "/").ifEmpty { "/" }
+                    val baseName = item.name.substringBeforeLast('.')
+                    sessionRepository.list(profile, parentDir).onSuccess { siblings ->
+                        val subs = siblings.filter { sib ->
+                            !sib.isDirectory &&
+                            (sib.name.endsWith(".srt", ignoreCase = true) || sib.name.endsWith(".vtt", ignoreCase = true)) &&
+                            (sib.name.startsWith(baseName, ignoreCase = true) || siblings.count { it.name.endsWith(".srt", true) || it.name.endsWith(".vtt", true) } == 1)
+                        }.map { sib ->
+                            AppSubtitleTrack(
+                                id = sib.path,
+                                name = sib.name,
+                                type = "external",
+                                path = sib.path
+                            )
+                        }
+                        foundSubtitles = subs
                     }
-                    availableSubtitles = subs
-                    if (subs.isNotEmpty() && selectedSubtitle == null) {
-                        selectedSubtitle = subs.first()
-                    }
+                }
+
+                availableSubtitles = foundSubtitles
+                if (foundSubtitles.isNotEmpty() && selectedSubtitle == null) {
+                    selectedSubtitle = foundSubtitles.first()
                 }
             }
         }
@@ -328,7 +429,14 @@ internal fun MediaPreview(
     LaunchedEffect(selectedSubtitle) {
         val sub = selectedSubtitle ?: return@LaunchedEffect
         withContext(Dispatchers.IO) {
-            sessionRepository.readText(profile, sub.path).onSuccess { content ->
+            val contentResult = if (sub.url.isNotBlank()) {
+                sessionRepository.fetchUrlContent(profile, sub.url)
+            } else if (sub.path.isNotBlank()) {
+                sessionRepository.readText(profile, sub.path)
+            } else {
+                null
+            }
+            contentResult?.onSuccess { content ->
                 subtitleCues = parseSubtitles(content)
             }
         }
@@ -356,6 +464,8 @@ internal fun MediaPreview(
                 subtitleCues = subtitleCues,
                 subtitlesEnabled = subtitlesEnabled,
                 onToggleSubtitles = { subtitlesEnabled = !subtitlesEnabled },
+                subtitlePosition = subtitlePosition,
+                onSubtitlePositionChanged = { subtitlePosition = it },
                 onPositionChanged = { savedPositionMs = it },
                 onFailure = { authenticationFailure ->
                     when (streamFailureAction(authenticationFailure, retryState.retryUsed, retryState.refreshInFlight)) {
@@ -393,12 +503,14 @@ private fun MediaPlayerContent(
     mimeType: String,
     initialPositionMs: Long,
     reprepareGeneration: Int,
-    availableSubtitles: List<RemoteResource> = emptyList(),
-    selectedSubtitle: RemoteResource? = null,
-    onSelectSubtitle: (RemoteResource) -> Unit = {},
+    availableSubtitles: List<AppSubtitleTrack> = emptyList(),
+    selectedSubtitle: AppSubtitleTrack? = null,
+    onSelectSubtitle: (AppSubtitleTrack) -> Unit = {},
     subtitleCues: List<SubtitleCue> = emptyList(),
     subtitlesEnabled: Boolean = true,
     onToggleSubtitles: () -> Unit = {},
+    subtitlePosition: SubtitlePosition = SubtitlePosition.LOW,
+    onSubtitlePositionChanged: (SubtitlePosition) -> Unit = {},
     onPositionChanged: (Long) -> Unit,
     onFailure: (Boolean) -> Unit,
 ) {
@@ -418,6 +530,12 @@ private fun MediaPlayerContent(
     var currentSpeed by remember(player) { mutableFloatStateOf(1.0f) }
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showSubtitleMenu by remember { mutableStateOf(false) }
+    val originalAudioLabel = stringResource(R.string.audio_original)
+    val dubbingAudioLabel = stringResource(R.string.audio_dubbing)
+    var audioTracks by remember(player) {
+        mutableStateOf(extractAudioTracks(player.currentTracks, originalAudioLabel, dubbingAudioLabel))
+    }
+    var showAudioMenu by remember { mutableStateOf(false) }
     var isLongPressing by remember { mutableStateOf(false) }
     var doubleTapFeedback by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
@@ -433,6 +551,9 @@ private fun MediaPlayerContent(
             override fun onPlaybackStateChanged(state: Int) {
                 isLoading = state == Player.STATE_BUFFERING
                 durationMs = player.duration.coerceAtLeast(0L)
+            }
+            override fun onTracksChanged(tracks: Tracks) {
+                audioTracks = extractAudioTracks(tracks, originalAudioLabel, dubbingAudioLabel)
             }
             override fun onVideoSizeChanged(videoSize: VideoSize) {
                 if (videoSize.width > 0 && videoSize.height > 0) {
@@ -535,6 +656,13 @@ private fun MediaPlayerContent(
                 },
             contentAlignment = Alignment.Center,
         ) {
+            // Active Subtitle Text Overlay
+            val activeCueText = remember(seekPositionMs, subtitleCues, subtitlesEnabled) {
+                if (subtitlesEnabled && subtitleCues.isNotEmpty()) {
+                    subtitleCues.find { seekPositionMs in it.startMs..it.endMs }?.text
+                } else null
+            }
+
             BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 val containerRatio = maxWidth.value / maxHeight.value.coerceAtLeast(1f)
                 val videoModifier = if (containerRatio > videoAspectRatio) {
@@ -542,10 +670,45 @@ private fun MediaPlayerContent(
                 } else {
                     Modifier.fillMaxWidth().aspectRatio(videoAspectRatio)
                 }
-                PlayerSurface(
-                    player = player,
-                    modifier = videoModifier,
-                )
+                Box(modifier = videoModifier) {
+                    PlayerSurface(
+                        player = player,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    // Active Subtitle Text Overlay (Anchored directly inside the video frame!)
+                    if (activeCueText != null) {
+                        val bottomPadding = when (subtitlePosition) {
+                            SubtitlePosition.LOW -> 8.dp
+                            SubtitlePosition.MEDIUM -> 32.dp
+                            SubtitlePosition.HIGH -> 56.dp
+                        }
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = bottomPadding)
+                                .padding(horizontal = 16.dp)
+                        ) {
+                            Text(
+                                text = activeCueText,
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.Center,
+                                style = TextStyle(
+                                    shadow = Shadow(
+                                        color = Color.Black,
+                                        offset = Offset(1.5f, 1.5f),
+                                        blurRadius = 3f
+                                    )
+                                ),
+                                modifier = Modifier
+                                    .background(Color(0xB3000000), shape = RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
             }
 
             if (isLoading) {
@@ -627,39 +790,6 @@ private fun MediaPlayerContent(
                         Text("5s »", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Text(stringResource(R.string.forward_5s), color = Color.White.copy(alpha = 0.8f), fontSize = 11.sp)
                     }
-                }
-            }
-
-            // Active Subtitle Text Overlay (YouTube Style with drop-shadow & adaptive padding)
-            val activeCueText = remember(seekPositionMs, subtitleCues, subtitlesEnabled) {
-                if (subtitlesEnabled && subtitleCues.isNotEmpty()) {
-                    subtitleCues.find { seekPositionMs in it.startMs..it.endMs }?.text
-                } else null
-            }
-            if (activeCueText != null) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = if (controlsVisible) 84.dp else 28.dp)
-                        .padding(horizontal = 24.dp)
-                ) {
-                    Text(
-                        text = activeCueText,
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        textAlign = TextAlign.Center,
-                        style = TextStyle(
-                            shadow = Shadow(
-                                color = Color.Black,
-                                offset = Offset(1.5f, 1.5f),
-                                blurRadius = 3f
-                            )
-                        ),
-                        modifier = Modifier
-                            .background(Color(0xB3000000), shape = RoundedCornerShape(4.dp))
-                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
                 }
             }
 
@@ -769,46 +899,83 @@ private fun MediaPlayerContent(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 // CC Subtitle Button
-                                if (availableSubtitles.isNotEmpty()) {
-                                    Box {
-                                        Button(
-                                            onClick = {
-                                                if (availableSubtitles.size > 1) {
-                                                    showSubtitleMenu = true
-                                                } else {
-                                                    onToggleSubtitles()
+                                Box {
+                                    Button(
+                                        onClick = {
+                                            showSubtitleMenu = true
+                                            showControls()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (subtitlesEnabled && selectedSubtitle != null) Color(0xFF2196F3) else Color(0x33FFFFFF)
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Text(
+                                            text = "CC",
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = showSubtitleMenu,
+                                        onDismissRequest = { showSubtitleMenu = false },
+                                        modifier = Modifier.background(Color(0xFF1E1E1E)).widthIn(min = 200.dp)
+                                    ) {
+                                        Text(
+                                            stringResource(R.string.subtitles),
+                                            color = Color.Gray,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                        )
+
+                                        // Option: Off
+                                        val isOff = !subtitlesEnabled || selectedSubtitle == null
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = stringResource(R.string.subtitles_off),
+                                                        color = if (isOff) Color(0xFF2196F3) else Color.White,
+                                                        fontWeight = if (isOff) FontWeight.Bold else FontWeight.Normal
+                                                    )
+                                                    if (isOff) {
+                                                        Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                                                    }
                                                 }
-                                                showControls()
                                             },
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = if (subtitlesEnabled) Color(0xFF2196F3) else Color(0x33FFFFFF)
-                                            ),
-                                            shape = RoundedCornerShape(8.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                            modifier = Modifier.height(32.dp)
-                                        ) {
-                                            Text(
-                                                text = "CC",
-                                                color = Color.White,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold
+                                            onClick = {
+                                                if (subtitlesEnabled) onToggleSubtitles()
+                                                showSubtitleMenu = false
+                                                showControls()
+                                            }
+                                        )
+
+                                        // Subtitle tracks
+                                        if (availableSubtitles.isEmpty()) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = "(Không có phụ đề)",
+                                                        color = Color.Gray,
+                                                        fontSize = 13.sp
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showSubtitleMenu = false
+                                                    showControls()
+                                                }
                                             )
-                                        }
-
-                                        if (availableSubtitles.size > 1) {
-                                            DropdownMenu(
-                                                expanded = showSubtitleMenu,
-                                                onDismissRequest = { showSubtitleMenu = false },
-                                                modifier = Modifier.background(Color(0xFF1E1E1E))
-                                            ) {
-                                                Text(
-                                                    stringResource(R.string.subtitles),
-                                                    color = Color.Gray,
-                                                    fontSize = 12.sp,
-                                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                                                )
-
-                                                // Option: Off
+                                        } else {
+                                            availableSubtitles.forEach { sub ->
+                                                val isCurrent = subtitlesEnabled && selectedSubtitle?.id == sub.id
                                                 DropdownMenuItem(
                                                     text = {
                                                         Row(
@@ -817,51 +984,147 @@ private fun MediaPlayerContent(
                                                             verticalAlignment = Alignment.CenterVertically
                                                         ) {
                                                             Text(
-                                                                text = stringResource(R.string.subtitles_off),
-                                                                color = if (!subtitlesEnabled) Color(0xFF2196F3) else Color.White,
-                                                                fontWeight = if (!subtitlesEnabled) FontWeight.Bold else FontWeight.Normal
+                                                                text = sub.name,
+                                                                color = if (isCurrent) Color(0xFF2196F3) else Color.White,
+                                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                                                maxLines = 1
                                                             )
-                                                            if (!subtitlesEnabled) {
+                                                            if (isCurrent) {
                                                                 Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
                                                             }
                                                         }
                                                     },
                                                     onClick = {
-                                                        if (subtitlesEnabled) onToggleSubtitles()
+                                                        onSelectSubtitle(sub)
+                                                        if (!subtitlesEnabled) onToggleSubtitles()
                                                         showSubtitleMenu = false
                                                         showControls()
                                                     }
                                                 )
+                                            }
+                                        }
 
-                                                // Subtitle tracks
-                                                availableSubtitles.forEach { sub ->
-                                                    val isCurrent = subtitlesEnabled && selectedSubtitle?.path == sub.path
-                                                    DropdownMenuItem(
-                                                        text = {
-                                                            Row(
-                                                                modifier = Modifier.fillMaxWidth(),
-                                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                                verticalAlignment = Alignment.CenterVertically
-                                                            ) {
-                                                                Text(
-                                                                    text = sub.name,
-                                                                    color = if (isCurrent) Color(0xFF2196F3) else Color.White,
-                                                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                                                    maxLines = 1
-                                                                )
-                                                                if (isCurrent) {
-                                                                    Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
-                                                                }
-                                                            }
-                                                        },
-                                                        onClick = {
-                                                            onSelectSubtitle(sub)
-                                                            if (!subtitlesEnabled) onToggleSubtitles()
-                                                            showSubtitleMenu = false
-                                                            showControls()
+                                        // Section: Subtitle Position (Cao / Vừa / Thấp)
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(1.dp)
+                                                .background(Color(0x33FFFFFF))
+                                        )
+
+                                        Text(
+                                            stringResource(R.string.subtitle_position),
+                                            color = Color.Gray,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                                        )
+
+                                        listOf(
+                                            SubtitlePosition.HIGH to stringResource(R.string.sub_pos_high),
+                                            SubtitlePosition.MEDIUM to stringResource(R.string.sub_pos_medium),
+                                            SubtitlePosition.LOW to stringResource(R.string.sub_pos_low)
+                                        ).forEach { (pos, label) ->
+                                            val isSelected = subtitlePosition == pos
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = label,
+                                                            color = if (isSelected) Color(0xFF2196F3) else Color.White,
+                                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                                        )
+                                                        if (isSelected) {
+                                                            Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
                                                         }
-                                                    )
+                                                    }
+                                                },
+                                                onClick = {
+                                                    onSubtitlePositionChanged(pos)
+                                                    showSubtitleMenu = false
+                                                    showControls()
                                                 }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Audio Track Selector Button (visible when video has multiple audio tracks)
+                                if (audioTracks.size > 1) {
+                                    Box {
+                                        Button(
+                                            onClick = {
+                                                showAudioMenu = true
+                                                showControls()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = Color(0x33FFFFFF)
+                                            ),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier.height(32.dp)
+                                        ) {
+                                            Text(
+                                                text = "🎧",
+                                                fontSize = 12.sp
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = stringResource(R.string.audio_tracks),
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        DropdownMenu(
+                                            expanded = showAudioMenu,
+                                            onDismissRequest = { showAudioMenu = false },
+                                            modifier = Modifier.background(Color(0xFF1E1E1E))
+                                        ) {
+                                            Text(
+                                                stringResource(R.string.audio_tracks),
+                                                color = Color.Gray,
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                            )
+
+                                            audioTracks.forEach { track ->
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Text(
+                                                                text = track.name,
+                                                                color = if (track.isSelected) Color(0xFF2196F3) else Color.White,
+                                                                fontWeight = if (track.isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                                maxLines = 1
+                                                            )
+                                                            if (track.isSelected) {
+                                                                Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                                                            }
+                                                        }
+                                                    },
+                                                    onClick = {
+                                                        player.trackSelectionParameters = player.trackSelectionParameters
+                                                            .buildUpon()
+                                                            .setOverrideForType(
+                                                                TrackSelectionOverride(
+                                                                    track.group.mediaTrackGroup,
+                                                                    track.trackIndex
+                                                                )
+                                                            )
+                                                            .build()
+                                                        showAudioMenu = false
+                                                        showControls()
+                                                    }
+                                                )
                                             }
                                         }
                                     }

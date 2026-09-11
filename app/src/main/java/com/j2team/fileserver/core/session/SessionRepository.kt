@@ -139,6 +139,12 @@ class SessionRepository(
     suspend fun readText(profile: ServerProfile, remotePath: String): Result<String> =
         authenticated(profile) { token -> transport.readTextResult(profile, token, remotePath) }
 
+    suspend fun fetchVideoSubtitles(profile: ServerProfile, remotePath: String): Result<String> =
+        authenticated(profile) { token -> transport.fetchVideoSubtitlesResult(profile, token, remotePath) }
+
+    suspend fun fetchUrlContent(profile: ServerProfile, url: String): Result<String> =
+        authenticated(profile) { token -> transport.fetchUrlContentResult(profile, token, url) }
+
     /**
      * Returns the active token without probing an unrelated directory first.
      * The media request itself is the authoritative authentication check and can
