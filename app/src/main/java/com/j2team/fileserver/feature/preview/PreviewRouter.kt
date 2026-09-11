@@ -4,10 +4,11 @@ import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 
-enum class PreviewKind { Image, Pdf, Video, Audio, Text, Unsupported }
+enum class PreviewKind { Image, Pdf, Video, Audio, Text, Comic, Unsupported }
 
 object PreviewRouter {
     private val image = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heif", "heic", "avif")
+    private val comic = setOf("cbz", "cbr", "cbt", "cb7")
     private val video = setOf("mp4", "m4v", "mkv", "mov", "webm", "wmv", "avi", "m2ts", "mts", "ts", "flv", "3gp", "3g2", "mpeg", "mpg", "vob", "ogv")
     private val audio = setOf("mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "wma", "amr", "aiff", "aif", "mka")
     private val text = setOf(
@@ -24,6 +25,7 @@ object PreviewRouter {
 
     fun kind(name: String): PreviewKind = when (extension(name)) {
         in image -> PreviewKind.Image
+        in comic -> PreviewKind.Comic
         "pdf" -> PreviewKind.Pdf
         in text -> PreviewKind.Text
         in video -> PreviewKind.Video
@@ -77,6 +79,10 @@ object PreviewRouter {
         "bmp" -> "image/bmp"
         "avif" -> "image/avif"
         "pdf" -> "application/pdf"
+        "cbz" -> "application/vnd.comicbook+zip"
+        "cbr" -> "application/vnd.comicbook-rar"
+        "cbt" -> "application/vnd.comicbook+tar"
+        "cb7" -> "application/x-cb7"
         "mp4", "m4v" -> "video/mp4"
         "mkv" -> "video/x-matroska"
         "webm" -> "video/webm"

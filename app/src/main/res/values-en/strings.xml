@@ -198,4 +198,24 @@
     <string name="sync_notification_channel">Folder sync</string>
     <string name="sync_notification_title">Folder sync is active</string>
     <string name="sync_notification_text">Watching the phone and cloud for changes</string>
+    <string name="comic_loading">Loading comic…</string>
+    <string name="comic_retry">Retry</string>
+    <string name="comic_prev_chapter">« Previous</string>
+    <string name="comic_next_chapter">Next »</string>
+    <string name="comic_mode_webtoon">Webtoon</string>
+    <string name="comic_mode_single">1 Page</string>
+    <string name="comic_mode_double">2 Pages (RTL)</string>
+    <string name="preview_prev_item">« Previous</string>
+    <string name="preview_next_item">Next »</string>
+    <string name="loading">Loading…</string>
+    <string name="back">Back</string>
+    <string name="saving">Saving…</string>
+    <string name="saved_successfully">Saved successfully</string>
+    <string name="playback_speed">Playback speed</string>
+    <string name="speed_normal">Normal (1.0x)</string>
+    <string name="fast_forward_boost">Speed 1.5x ⏩</string>
+    <string name="rewind_5s">« 5s</string>
+    <string name="forward_5s">5s »</string>
+    <string name="subtitles">Subtitles</string>
+    <string name="subtitles_off">Off</string>
 </resources>

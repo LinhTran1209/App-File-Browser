@@ -12,10 +12,13 @@ import com.j2team.fileserver.core.model.ServerUser
 import com.j2team.fileserver.core.model.AdminDirectoryListing
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.network.PreviewProbe
+import com.j2team.fileserver.core.network.ComicManifest
 import com.j2team.fileserver.feature.sync.RemoteChangePage
 import com.j2team.fileserver.feature.sync.SyncEntry
 import com.j2team.fileserver.feature.sync.ServerIdentityStore
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -354,6 +357,28 @@ class SessionRepository(
         } finally {
             credential.password.fill('\u0000')
         }
+    }
+
+    suspend fun comicManifest(profile: ServerProfile, remotePath: String): Result<ComicManifest> =
+        authenticated(profile) { token -> transport.comicManifestResult(profile, token, remotePath) }
+
+    suspend fun saveResource(
+        profile: ServerProfile,
+        path: String,
+        content: String,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        authenticated(profile) { token ->
+            transport.saveResourceResult(profile, token, path, content)
+        }
+    }
+
+    suspend fun downloadComicPage(
+        profile: ServerProfile,
+        remotePath: String,
+        pageIndex: Int,
+        destination: File,
+    ): Result<File> = authenticated(profile) { token ->
+        transport.downloadComicPageResult(profile, token, remotePath, pageIndex, destination)
     }
 
     fun clear(profileId: String) {

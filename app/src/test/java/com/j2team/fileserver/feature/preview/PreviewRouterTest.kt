@@ -10,6 +10,7 @@ class PreviewRouterTest {
         val cases = mapOf(
             PreviewKind.Image to listOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "heif", "heic", "avif"),
             PreviewKind.Pdf to listOf("pdf"),
+            PreviewKind.Comic to listOf("cbz", "cbr", "cbt", "cb7"),
             PreviewKind.Text to listOf(
                 "txt", "md", "markdown", "py", "pyw", "json", "xml", "yaml", "yml", "toml", "ini", "conf", "cfg",
                 "log", "csv", "tsv", "kt", "kts", "java", "c", "h", "cpp", "hpp", "cs", "js", "jsx", "ts", "tsx",

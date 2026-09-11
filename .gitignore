@@ -13,3 +13,11 @@ captures/
 .cxx/
 .superpowers/sdd/review-*.diff
 .calm/
+.kotlin/
+*.apk
+*.aab
+*.hprof
+checksum-verification.txt
+
+/docs/superpowers/
+/.agents/

@@ -36,6 +36,9 @@ import java.util.concurrent.atomic.AtomicReference
 
 data class PreviewProbe(val mimeType: String?, val sample: ByteArray)
 
+data class ComicPage(val index: Int, val name: String)
+data class ComicManifest(val title: String, val pages: List<ComicPage>, val count: Int)
+
 private const val NETWORK_BUFFER_SIZE = 256 * 1024
 private const val TUS_CHUNK_SIZE = 32L * 1024L * 1024L
 
@@ -1135,6 +1138,103 @@ class FileBrowserClient {
             }
         }
         return null
+    }
+
+    fun comicManifestResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+    ): ApiResult<ComicManifest> = try {
+        val encodedPath = encodePath(remotePath)
+        val url = profile.endpoint.trimEnd('/') + "/api/comic/manifest?path=$encodedPath"
+        val connection = open(url, "GET")
+        applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) ApiResult(code, error = IOException("Unable to get comic manifest ($code)"))
+        else {
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(body)
+            val title = json.optString("title", remotePath.substringAfterLast('/'))
+            val pagesJson = json.optJSONArray("pages") ?: JSONArray()
+            val pages = (0 until pagesJson.length()).map { i ->
+                val p = pagesJson.getJSONObject(i)
+                ComicPage(index = p.getInt("index"), name = p.optString("name", "Page $i"))
+            }
+            val count = json.optInt("count", pages.size)
+            ApiResult(code, ComicManifest(title, pages, count))
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun saveResourceResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        content: String,
+    ): ApiResult<Unit> = try {
+        val url = apiUrl(profile, "/api/resources", remotePath)
+        val connection = open(url, "PUT")
+        applyAuthorization(connection, token)
+        connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+        connection.doOutput = true
+        val bytes = content.toByteArray(Charsets.UTF_8)
+        connection.outputStream.use { it.write(bytes) }
+        val code = connection.responseCode
+        if (code in 200..299) {
+            ApiResult(code, Unit)
+        } else if (code == 404 || code == 405) {
+            // Fallback to POST with override=true (which handles both new and existing files)
+            val postUrl = apiUrl(profile, "/api/resources", remotePath) + "?override=true"
+            val postConn = open(postUrl, "POST")
+            applyAuthorization(postConn, token)
+            postConn.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+            postConn.doOutput = true
+            postConn.outputStream.use { it.write(bytes) }
+            val postCode = postConn.responseCode
+            if (postCode in 200..299) {
+                ApiResult(postCode, Unit)
+            } else {
+                val errBody = postConn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                ApiResult(postCode, error = IOException("Unable to save file ($postCode): $errBody"))
+            }
+        } else {
+            val errBody = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+            ApiResult(code, error = IOException("Unable to save file ($code): $errBody"))
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun downloadComicPageResult(
+        profile: ServerProfile,
+        token: String?,
+        remotePath: String,
+        pageIndex: Int,
+        destination: File,
+    ): ApiResult<File> = try {
+        val encodedPath = encodePath(remotePath)
+        val url = profile.endpoint.trimEnd('/') + "/api/comic/page?path=$encodedPath&page=$pageIndex"
+        val connection = open(url, "GET")
+        applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) ApiResult(code, error = IOException("Unable to load comic page ($code)"))
+        else {
+            destination.parentFile?.mkdirs()
+            val temp = File(destination.parentFile, ".page-${destination.name}.tmp")
+            connection.inputStream.use { input ->
+                temp.outputStream().buffered().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (temp.exists()) {
+                if (destination.exists()) destination.delete()
+                temp.renameTo(destination)
+            }
+            ApiResult(code, destination)
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
     }
 
     companion object {

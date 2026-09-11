@@ -22,6 +22,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -115,7 +117,7 @@ private class PdfDocument(private val file: File) : Closeable {
 }
 
 @Composable
-internal fun PdfPreview(file: File, modifier: Modifier = Modifier) {
+internal fun PdfPreview(file: File, modifier: Modifier = Modifier, onTap: (() -> Unit)? = null) {
     val document = remember(file) { PdfDocument(file) }
     var error by remember(file) { mutableStateOf<String?>(null) }
 
@@ -137,15 +139,22 @@ internal fun PdfPreview(file: File, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             items(count = document.pageCount, key = { it }) { index ->
-                PdfPage(document, index)
+                PdfPage(document, index, onTap)
             }
         }
     }
 }
 
 @Composable
-private fun PdfPage(document: PdfDocument, index: Int) {
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+private fun PdfPage(document: PdfDocument, index: Int, onTap: (() -> Unit)? = null) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(document, index, onTap) {
+                detectTapGestures(onTap = { onTap?.invoke() })
+            },
+        contentAlignment = Alignment.Center
+    ) {
         val width = with(LocalDensity.current) { maxWidth.roundToPx().coerceAtLeast(1) }
         var bitmap by remember(document, index, width) { mutableStateOf<Bitmap?>(null) }
         var error by remember(document, index, width) { mutableStateOf<String?>(null) }

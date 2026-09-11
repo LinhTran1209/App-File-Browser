@@ -6,7 +6,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Environment
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
@@ -36,16 +35,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -463,6 +460,7 @@ fun BrowserScreen(
 
     if (preview != null && profile != null) {
         val images = resources.filter { !it.isDirectory && PreviewRouter.kind(it.name, it.mimeType) == PreviewKind.Image }
+        val comics = resources.filter { !it.isDirectory && PreviewRouter.kind(it.name, it.mimeType) == PreviewKind.Comic }
         PreviewScreen(
             profile = profile,
             item = preview!!,
@@ -470,6 +468,8 @@ fun BrowserScreen(
             sessionRepository = sessionRepository,
             imageSiblings = images,
             onNavigateImage = { preview = it },
+            comicSiblings = comics,
+            onNavigateComic = { preview = it },
             onBack = { preview = null },
         )
         return
@@ -1106,6 +1106,14 @@ private fun SelectionActionIcon(iconRes: Int, description: String, onClick: () -
     }
 }
 
+private object ThumbnailMemoryCache {
+    private val maxMemory = (Runtime.getRuntime().maxMemory() / 1024).toInt()
+    private val cacheSize = (maxMemory / 8).coerceAtLeast(8 * 1024)
+    val cache = object : android.util.LruCache<String, android.graphics.Bitmap>(cacheSize) {
+        override fun sizeOf(key: String, bitmap: android.graphics.Bitmap): Int = bitmap.byteCount / 1024
+    }
+}
+
 @Composable
 private fun ResourceVisual(
     item: RemoteResource,
@@ -1122,7 +1130,11 @@ private fun ResourceVisual(
     }
     val previewKind = PreviewRouter.kind(item.name, item.mimeType)
     val canThumbnail = previewKind == PreviewKind.Image || previewKind == PreviewKind.Video
-    val fallbackIcon = if (previewKind == PreviewKind.Video) AppIcons.Video else AppIcons.File
+    val fallbackIcon = when (previewKind) {
+        PreviewKind.Video -> AppIcons.Video
+        PreviewKind.Comic -> AppIcons.Comic
+        else -> AppIcons.File
+    }
     if (!canThumbnail || profile == null) {
         Icon(painterResource(fallbackIcon), stringResource(R.string.file), modifier, tint = Color.Unspecified)
         return
@@ -1134,42 +1146,54 @@ private fun ResourceVisual(
     val cacheFile = remember(cacheNamespace, item.path) {
         AppCacheManager.thumbnailFile(context, cacheNamespace, item.path)
     }
-    var bitmap by remember(cacheFile) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(cacheFile) {
-        bitmap = withContext(Dispatchers.IO) {
-            val cachedBitmap = if (cacheFile.isFile && cacheFile.length() > 0L) {
-                BitmapFactory.decodeFile(cacheFile.path)
+    val memKey = remember(cacheNamespace, item.path) { "$cacheNamespace:${item.path}" }
+    var bitmap by remember(memKey) { mutableStateOf(ThumbnailMemoryCache.cache.get(memKey)) }
+    LaunchedEffect(memKey) {
+        if (bitmap == null) {
+            val inMem = ThumbnailMemoryCache.cache.get(memKey)
+            if (inMem != null) {
+                bitmap = inMem
             } else {
-                null
-            }
-            if (cachedBitmap != null) {
-                AppCacheManager.recordAccess(cacheFile)
-                cachedBitmap
-            } else if (previewKind == PreviewKind.Image) {
-                cacheFile.delete()
-                cacheFile.parentFile?.mkdirs()
-                sessionRepository.thumbnail(profile, item.path, cacheFile)
-                AppCacheManager.recordWrite(context, cacheFile)
-                BitmapFactory.decodeFile(cacheFile.path)
-            } else {
-                cacheFile.delete()
-                cacheFile.parentFile?.mkdirs()
-                val ready = fetchSharedVideoThumbnail(
-                    fetch = {
+                bitmap = withContext(Dispatchers.IO) {
+                    val cachedBitmap = if (cacheFile.isFile && cacheFile.length() > 0L) {
+                        BitmapFactory.decodeFile(cacheFile.path)
+                    } else {
+                        null
+                    }
+                    val result = if (cachedBitmap != null) {
+                        AppCacheManager.recordAccess(cacheFile)
+                        cachedBitmap
+                    } else if (previewKind == PreviewKind.Image) {
                         cacheFile.delete()
-                        sessionRepository.cachedVideoThumbnail(profile, item.path, cacheFile).isSuccess &&
-                            cacheFile.isFile && cacheFile.length() > 0L
-                    },
-                    queue = {
-                        sessionRepository.requestVideoThumbnail(profile, item.path).isSuccess
-                    },
-                )
-                if (ready) {
-                    AppCacheManager.recordWrite(context, cacheFile)
-                    BitmapFactory.decodeFile(cacheFile.path)
-                } else {
-                    cacheFile.delete()
-                    null
+                        cacheFile.parentFile?.mkdirs()
+                        sessionRepository.thumbnail(profile, item.path, cacheFile)
+                        AppCacheManager.recordWrite(context, cacheFile)
+                        BitmapFactory.decodeFile(cacheFile.path)
+                    } else {
+                        cacheFile.delete()
+                        cacheFile.parentFile?.mkdirs()
+                        val ready = fetchSharedVideoThumbnail(
+                            fetch = {
+                                cacheFile.delete()
+                                sessionRepository.cachedVideoThumbnail(profile, item.path, cacheFile).isSuccess &&
+                                    cacheFile.isFile && cacheFile.length() > 0L
+                            },
+                            queue = {
+                                sessionRepository.requestVideoThumbnail(profile, item.path).isSuccess
+                            },
+                        )
+                        if (ready) {
+                            AppCacheManager.recordWrite(context, cacheFile)
+                            BitmapFactory.decodeFile(cacheFile.path)
+                        } else {
+                            cacheFile.delete()
+                            null
+                        }
+                    }
+                    if (result != null) {
+                        ThumbnailMemoryCache.cache.put(memKey, result)
+                    }
+                    result
                 }
             }
         }

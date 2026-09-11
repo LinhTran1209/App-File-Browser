@@ -3,10 +3,10 @@ package com.j2team.fileserver.feature.preview
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -16,10 +16,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -58,30 +60,62 @@ internal fun ImagePreview(
     file: File,
     description: String,
     modifier: Modifier = Modifier,
+    onTap: (() -> Unit)? = null,
     onSwipeUp: (() -> Unit)? = null,
     onSwipeDown: (() -> Unit)? = null,
 ) {
     val density = LocalDensity.current
     val swipeThreshold = with(density) { 72.dp.toPx() }
-    var dragDistance by remember(file) { mutableStateOf(0f) }
+    var scale by remember(file) { mutableStateOf(1f) }
+    var offset by remember(file) { mutableStateOf(Offset.Zero) }
+    var dragDistanceX by remember(file) { mutableStateOf(0f) }
+    var dragDistanceY by remember(file) { mutableStateOf(0f) }
+
     BoxWithConstraints(
-        modifier = modifier.fillMaxSize().pointerInput(file, onSwipeUp, onSwipeDown) {
-            detectVerticalDragGestures(
-                onDragStart = { dragDistance = 0f },
-                onVerticalDrag = { change, amount ->
-                    change.consume()
-                    dragDistance += amount
-                },
-                onDragEnd = {
-                    when {
-                        dragDistance <= -swipeThreshold -> onSwipeUp?.invoke()
-                        dragDistance >= swipeThreshold -> onSwipeDown?.invoke()
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(file, onTap) {
+                detectTapGestures(
+                    onTap = { onTap?.invoke() },
+                    onDoubleTap = {
+                        if (scale > 1.2f) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        } else {
+                            scale = 2.5f
+                            offset = Offset.Zero
+                        }
                     }
-                    dragDistance = 0f
-                },
-                onDragCancel = { dragDistance = 0f },
-            )
-        },
+                )
+            }
+            .pointerInput(file, onSwipeUp, onSwipeDown) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(1f, 5f)
+                    val maxOffsetX = (newScale - 1f) * (size.width / 2f)
+                    val maxOffsetY = (newScale - 1f) * (size.height / 2f)
+                    val newOffsetX = if (newScale <= 1f) 0f else (offset.x + pan.x).coerceIn(-maxOffsetX, maxOffsetX)
+                    val newOffsetY = if (newScale <= 1f) 0f else (offset.y + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
+
+                    if (scale <= 1.05f && newScale <= 1.05f) {
+                        dragDistanceY += pan.y
+                        dragDistanceX += pan.x
+                        if (dragDistanceY <= -swipeThreshold || dragDistanceX <= -swipeThreshold) {
+                            onSwipeUp?.invoke()
+                            dragDistanceY = 0f
+                            dragDistanceX = 0f
+                        } else if (dragDistanceY >= swipeThreshold || dragDistanceX >= swipeThreshold) {
+                            onSwipeDown?.invoke()
+                            dragDistanceY = 0f
+                            dragDistanceX = 0f
+                        }
+                    } else {
+                        dragDistanceY = 0f
+                        dragDistanceX = 0f
+                        scale = newScale
+                        offset = Offset(newOffsetX, newOffsetY)
+                    }
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         val targetWidth = with(density) { maxWidth.roundToPx().coerceAtLeast(1) }
@@ -114,7 +148,14 @@ internal fun ImagePreview(
             Image(
                 bitmap = decoded.asImageBitmap(),
                 contentDescription = description,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    },
                 contentScale = ContentScale.Fit,
             )
         }

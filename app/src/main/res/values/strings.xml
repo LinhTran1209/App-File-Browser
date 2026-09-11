@@ -198,4 +198,24 @@
     <string name="sync_notification_channel">Đồng bộ thư mục</string>
     <string name="sync_notification_title">Đang đồng bộ thư mục</string>
     <string name="sync_notification_text">Theo dõi thay đổi trên điện thoại và cloud</string>
+    <string name="comic_loading">Đang tải truyện…</string>
+    <string name="comic_retry">Thử lại</string>
+    <string name="comic_prev_chapter">« Tập trước</string>
+    <string name="comic_next_chapter">Tập sau »</string>
+    <string name="comic_mode_webtoon">Webtoon</string>
+    <string name="comic_mode_single">1 Trang</string>
+    <string name="comic_mode_double">2 Trang (RTL)</string>
+    <string name="preview_prev_item">« Trước</string>
+    <string name="preview_next_item">Sau »</string>
+    <string name="loading">Đang tải…</string>
+    <string name="back">Quay lại</string>
+    <string name="saving">Đang lưu…</string>
+    <string name="saved_successfully">Đã lưu thành công</string>
+    <string name="playback_speed">Tốc độ phát</string>
+    <string name="speed_normal">Chuẩn (1.0x)</string>
+    <string name="fast_forward_boost">Tốc độ 1.5x ⏩</string>
+    <string name="rewind_5s">« 5s</string>
+    <string name="forward_5s">5s »</string>
+    <string name="subtitles">Phụ đề</string>
+    <string name="subtitles_off">Tắt phụ đề</string>
 </resources>

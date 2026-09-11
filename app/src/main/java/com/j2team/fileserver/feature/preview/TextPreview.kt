@@ -1,13 +1,20 @@
 package com.j2team.fileserver.feature.preview
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -17,12 +24,17 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.j2team.fileserver.core.model.RemoteResource
 import com.j2team.fileserver.core.model.ServerProfile
 import com.j2team.fileserver.core.session.SessionRepository
@@ -59,43 +71,24 @@ class TextPager(input: InputStream, private val pageBytes: Int = TEXT_PAGE_BYTES
         var count = 0
         while (count < bytes.size) {
             val read = input.read(bytes, count, bytes.size - count)
-            if (read < 0) break
-            if (read > 0) count += read
+            if (read < 0) {
+                exhausted = true
+                break
+            }
+            count += read
         }
+        if (count == 0) return null
 
-        if (count == 0) {
-            exhausted = true
-            close()
-            return null
+        val pushback = trailingIncompleteUtf8Bytes(bytes, count)
+        if (pushback > 0) {
+            input.unread(bytes, count - pushback, pushback)
+            count -= pushback
         }
-
-        val completeLength = completeUtf8PrefixLength(bytes, count)
-        if (completeLength < count) input.unread(bytes, completeLength, count - completeLength)
-        if (count < bytes.size) {
-            exhausted = true
-            close()
-        }
-        return TextPage(bytes.decodeToString(endIndex = completeLength))
+        return TextPage(String(bytes, 0, count, Charsets.UTF_8))
     }
 
     override fun close() {
         input.close()
-    }
-
-    private fun completeUtf8PrefixLength(bytes: ByteArray, length: Int): Int {
-        var start = length - 1
-        while (start > 0 && isContinuationByte(bytes[start])) start--
-        val width = utf8Width(bytes[start])
-        return if (width > 1 && length - start < width) start else length
-    }
-
-    private fun isContinuationByte(byte: Byte): Boolean = byte.toInt() and 0xC0 == 0x80
-
-    private fun utf8Width(byte: Byte): Int = when (byte.toInt() and 0xFF) {
-        in 0xC2..0xDF -> 2
-        in 0xE0..0xEF -> 3
-        in 0xF0..0xF4 -> 4
-        else -> 1
     }
 
     private companion object {
@@ -110,6 +103,10 @@ internal fun TextPreview(
     sessionRepository: SessionRepository,
     onError: (String) -> Unit,
     modifier: Modifier = Modifier,
+    isEditing: Boolean = false,
+    textDraft: String = "",
+    onTextDraftChange: (String) -> Unit = {},
+    onTap: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val previewFile = remember(profile.id, item.path) {
@@ -119,6 +116,7 @@ internal fun TextPreview(
     val pages = remember(profile.id, item.path) { mutableStateListOf<RenderedTextPage>() }
     var exhausted by remember(profile.id, item.path) { mutableStateOf(false) }
     var nextPageId by remember(profile.id, item.path) { mutableStateOf(0L) }
+    var isLoaded by remember(profile.id, item.path) { mutableStateOf(false) }
 
     DisposableEffect(profile.id, item.path) {
         onDispose {
@@ -131,14 +129,44 @@ internal fun TextPreview(
             sessionRepository.download(profile, item.path, previewFile)
         }
         result
-            .onSuccess { downloaded -> pager = TextPager(downloaded.inputStream()) }
+            .onSuccess { downloaded ->
+                val fullText = downloaded.readText(Charsets.UTF_8)
+                onTextDraftChange(fullText)
+                isLoaded = true
+                pager = TextPager(downloaded.inputStream())
+            }
             .onFailure {
                 exhausted = true
                 onError(it.message ?: "Unable to load text preview")
             }
     }
 
-    TextPreviewPageList(pages, modifier) {
+    if (isEditing) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Color(0xFF0E0E0E))
+                .padding(start = 16.dp, end = 16.dp, top = 64.dp, bottom = 64.dp)
+        ) {
+            BasicTextField(
+                value = textDraft,
+                onValueChange = onTextDraftChange,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                textStyle = TextStyle(
+                    color = Color(0xFFECECEC),
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    lineHeight = 22.sp
+                ),
+                cursorBrush = SolidColor(Color(0xFF2196F3))
+            )
+        }
+        return
+    }
+
+    TextPreviewPageList(pages, modifier, onTap = onTap) {
         val activePager = pager
         if (activePager == null && !exhausted) {
             CircularProgressIndicator()
@@ -167,24 +195,57 @@ internal fun TextPreview(
 internal fun TextPreviewPageList(
     pages: List<RenderedTextPage>,
     modifier: Modifier = Modifier,
+    onTap: (() -> Unit)? = null,
     loadMore: @Composable () -> Unit = {},
 ) {
     LazyColumn(
-        modifier = modifier.fillMaxSize().testTag("text-preview-pages"),
-        contentPadding = PaddingValues(16.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("text-preview-pages")
+            .pointerInput(onTap) {
+                detectTapGestures(onTap = { onTap?.invoke() })
+            },
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 72.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         items(pages, key = RenderedTextPage::id) { rendered ->
             SelectionContainer {
                 Text(
                     text = rendered.page.text,
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFE0E0E0),
                     fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.testTag("text-page-${rendered.id}"),
+                    fontSize = 14.sp,
+                    lineHeight = 22.sp,
                 )
             }
         }
-        item(key = "next-page") { loadMore() }
+        item {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                loadMore()
+            }
+        }
     }
+}
+
+internal fun trailingIncompleteUtf8Bytes(bytes: ByteArray, length: Int): Int {
+    if (length <= 0) return 0
+    var index = length - 1
+    var sequenceBytes = 0
+    while (index >= 0 && sequenceBytes < 4) {
+        val current = bytes[index].toInt() and 0xFF
+        if (current and 0b1100_0000 != 0b1000_0000) {
+            val expectedLength = when {
+                current and 0b1000_0000 == 0 -> 1
+                current and 0b1110_0000 == 0b1100_0000 -> 2
+                current and 0b1111_0000 == 0b1110_0000 -> 3
+                current and 0b1111_1000 == 0b1111_0000 -> 4
+                else -> 1
+            }
+            val availableLength = length - index
+            return if (availableLength < expectedLength) availableLength else 0
+        }
+        sequenceBytes++
+        index--
+    }
+    return 0
 }

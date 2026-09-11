@@ -1,4 +1,29 @@
 package com.j2team.fileserver.feature.preview
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.Shadow
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 
 import android.app.Activity
 import android.content.Context
@@ -194,6 +219,54 @@ internal suspend fun requestVideoThumbnailOffMain(
 ) = withContext(dispatcher) { request() }
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
+
+internal data class SubtitleCue(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String,
+)
+
+private fun parseTimestampMs(timeStr: String): Long {
+    val parts = timeStr.trim().replace(',', '.').split(':')
+    return if (parts.size == 3) {
+        val hours = parts[0].toLongOrNull() ?: 0L
+        val minutes = parts[1].toLongOrNull() ?: 0L
+        val seconds = (parts[2].toDoubleOrNull() ?: 0.0) * 1000.0
+        hours * 3600_000L + minutes * 60_000L + seconds.toLong()
+    } else if (parts.size == 2) {
+        val minutes = parts[0].toLongOrNull() ?: 0L
+        val seconds = (parts[1].toDoubleOrNull() ?: 0.0) * 1000.0
+        minutes * 60_000L + seconds.toLong()
+    } else {
+        0L
+    }
+}
+
+private fun parseSubtitles(content: String): List<SubtitleCue> {
+    val cues = mutableListOf<SubtitleCue>()
+    val blocks = content.replace("\r\n", "\n").replace('\r', '\n').split("\n\n")
+    val arrowRegex = Regex("""(\d{1,2}:\d{2}:\d{2}[,\.]\d{2,3}|\d{2}:\d{2}[,\.]\d{2,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,\.]\d{2,3}|\d{2}:\d{2}[,\.]\d{2,3})""")
+
+    for (block in blocks) {
+        val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val timeLineIndex = lines.indexOfFirst { arrowRegex.containsMatchIn(it) }
+        if (timeLineIndex != -1) {
+            val match = arrowRegex.find(lines[timeLineIndex])
+            if (match != null) {
+                val start = parseTimestampMs(match.groupValues[1])
+                val end = parseTimestampMs(match.groupValues[2])
+                val text = lines.drop(timeLineIndex + 1)
+                    .joinToString("\n")
+                    .replace(Regex("<[^>]*>"), "")
+                if (text.isNotBlank() && end > start) {
+                    cues.add(SubtitleCue(start, end, text))
+                }
+            }
+        }
+    }
+    return cues
+}
+
 @Composable
 internal fun MediaPreview(
     profile: ServerProfile,
@@ -225,6 +298,42 @@ internal fun MediaPreview(
         }
     }
 
+    var availableSubtitles by remember(profile.id, item.path) { mutableStateOf<List<RemoteResource>>(emptyList()) }
+    var selectedSubtitle by remember(profile.id, item.path) { mutableStateOf<RemoteResource?>(null) }
+    var subtitleCues by remember(selectedSubtitle) { mutableStateOf<List<SubtitleCue>>(emptyList()) }
+    var subtitlesEnabled by remember(profile.id, item.path) { mutableStateOf(true) }
+
+    // Auto-detect sibling subtitles in parent directory
+    LaunchedEffect(profile.id, item.path, mimeType) {
+        if (mimeType?.startsWith("video/") == true) {
+            withContext(Dispatchers.IO) {
+                val parentDir = item.path.substringBeforeLast('/', "/").ifEmpty { "/" }
+                val baseName = item.name.substringBeforeLast('.')
+                sessionRepository.list(profile, parentDir).onSuccess { siblings ->
+                    val subs = siblings.filter { sib ->
+                        !sib.isDirectory &&
+                        (sib.name.endsWith(".srt", ignoreCase = true) || sib.name.endsWith(".vtt", ignoreCase = true)) &&
+                        (sib.name.startsWith(baseName, ignoreCase = true) || siblings.count { it.name.endsWith(".srt", true) || it.name.endsWith(".vtt", true) } == 1)
+                    }
+                    availableSubtitles = subs
+                    if (subs.isNotEmpty() && selectedSubtitle == null) {
+                        selectedSubtitle = subs.first()
+                    }
+                }
+            }
+        }
+    }
+
+    // Load selected subtitle content
+    LaunchedEffect(selectedSubtitle) {
+        val sub = selectedSubtitle ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            sessionRepository.readText(profile, sub.path).onSuccess { content ->
+                subtitleCues = parseSubtitles(content)
+            }
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -241,6 +350,12 @@ internal fun MediaPreview(
                 mimeType = mimeType,
                 initialPositionMs = savedPositionMs,
                 reprepareGeneration = retryState.reprepareGeneration,
+                availableSubtitles = availableSubtitles,
+                selectedSubtitle = selectedSubtitle,
+                onSelectSubtitle = { selectedSubtitle = it },
+                subtitleCues = subtitleCues,
+                subtitlesEnabled = subtitlesEnabled,
+                onToggleSubtitles = { subtitlesEnabled = !subtitlesEnabled },
                 onPositionChanged = { savedPositionMs = it },
                 onFailure = { authenticationFailure ->
                     when (streamFailureAction(authenticationFailure, retryState.retryUsed, retryState.refreshInFlight)) {
@@ -278,6 +393,12 @@ private fun MediaPlayerContent(
     mimeType: String,
     initialPositionMs: Long,
     reprepareGeneration: Int,
+    availableSubtitles: List<RemoteResource> = emptyList(),
+    selectedSubtitle: RemoteResource? = null,
+    onSelectSubtitle: (RemoteResource) -> Unit = {},
+    subtitleCues: List<SubtitleCue> = emptyList(),
+    subtitlesEnabled: Boolean = true,
+    onToggleSubtitles: () -> Unit = {},
     onPositionChanged: (Long) -> Unit,
     onFailure: (Boolean) -> Unit,
 ) {
@@ -294,7 +415,15 @@ private fun MediaPlayerContent(
     var fullscreen by rememberSaveable(player) { mutableStateOf(false) }
     var controlsVisible by remember(player) { mutableStateOf(true) }
     var controlsVersion by remember(player) { mutableLongStateOf(0L) }
+    var currentSpeed by remember(player) { mutableFloatStateOf(1.0f) }
+    var showSpeedMenu by remember { mutableStateOf(false) }
+    var showSubtitleMenu by remember { mutableStateOf(false) }
+    var isLongPressing by remember { mutableStateOf(false) }
+    var doubleTapFeedback by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    val speedOptions = remember { listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f) }
     val activity = remember(context) { context.findActivity() }
+
     DisposableEffect(player) {
         onDispose { player.release() }
     }
@@ -356,10 +485,54 @@ private fun MediaPlayerContent(
 
     val playerContent: @Composable (Modifier) -> Unit = { contentModifier ->
         Box(
-            modifier = contentModifier.background(Color.Black).clickable {
-                controlsVisible = !controlsVisible
-                if (controlsVisible) controlsVersion++
-            },
+            modifier = contentModifier
+                .background(Color.Black)
+                .pointerInput(player, currentSpeed) {
+                    detectTapGestures(
+                        onTap = {
+                            controlsVisible = !controlsVisible
+                            if (controlsVisible) controlsVersion++
+                        },
+                        onDoubleTap = { offset ->
+                            val isLeft = offset.x < size.width / 2f
+                            if (isLeft) {
+                                val newPos = (player.currentPosition - 5_000L).coerceAtLeast(0L)
+                                player.seekTo(newPos)
+                                seekPositionMs = newPos
+                                onPositionChanged(newPos)
+                                doubleTapFeedback = "rewind"
+                            } else {
+                                val upperBound = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+                                val newPos = (player.currentPosition + 5_000L).coerceAtMost(upperBound)
+                                player.seekTo(newPos)
+                                seekPositionMs = newPos
+                                onPositionChanged(newPos)
+                                doubleTapFeedback = "forward"
+                            }
+                            showControls()
+                            coroutineScope.launch {
+                                delay(700)
+                                if (doubleTapFeedback != null) doubleTapFeedback = null
+                            }
+                        },
+                        onPress = {
+                            val job = coroutineScope.launch {
+                                delay(400)
+                                isLongPressing = true
+                                player.setPlaybackSpeed(1.5f)
+                            }
+                            try {
+                                tryAwaitRelease()
+                            } finally {
+                                job.cancel()
+                                if (isLongPressing) {
+                                    isLongPressing = false
+                                    player.setPlaybackSpeed(currentSpeed)
+                                }
+                            }
+                        }
+                    )
+                },
             contentAlignment = Alignment.Center,
         ) {
             BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -374,46 +547,196 @@ private fun MediaPlayerContent(
                     modifier = videoModifier,
                 )
             }
-            if (isLoading) CircularProgressIndicator(
-                modifier = Modifier.semantics { contentDescription = loadingDescription },
-            )
-            if (controlsVisible) {
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.38f))) {
+
+            if (isLoading) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    modifier = Modifier.semantics { contentDescription = loadingDescription },
+                )
+            }
+
+            // Long-press 1.5x Speed Pill Overlay (Top Center)
+            AnimatedVisibility(
+                visible = isLongPressing,
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 16.dp)
+            ) {
+                Surface(
+                    color = Color(0xCC000000),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
                     Row(
-                        modifier = Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 36.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "${stringResource(R.string.fast_forward_boost)} ⏩",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+
+            // Double Tap Rewind Overlay (Left Center)
+            AnimatedVisibility(
+                visible = doubleTapFeedback == "rewind",
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 48.dp)
+            ) {
+                Surface(
+                    color = Color(0x99000000),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text("« 5s", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.rewind_5s), color = Color.White.copy(alpha = 0.8f), fontSize = 11.sp)
+                    }
+                }
+            }
+
+            // Double Tap Forward Overlay (Right Center)
+            AnimatedVisibility(
+                visible = doubleTapFeedback == "forward",
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 48.dp)
+            ) {
+                Surface(
+                    color = Color(0x99000000),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text("5s »", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.forward_5s), color = Color.White.copy(alpha = 0.8f), fontSize = 11.sp)
+                    }
+                }
+            }
+
+            // Active Subtitle Text Overlay (YouTube Style with drop-shadow & adaptive padding)
+            val activeCueText = remember(seekPositionMs, subtitleCues, subtitlesEnabled) {
+                if (subtitlesEnabled && subtitleCues.isNotEmpty()) {
+                    subtitleCues.find { seekPositionMs in it.startMs..it.endMs }?.text
+                } else null
+            }
+            if (activeCueText != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = if (controlsVisible) 84.dp else 28.dp)
+                        .padding(horizontal = 24.dp)
+                ) {
+                    Text(
+                        text = activeCueText,
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                        style = TextStyle(
+                            shadow = Shadow(
+                                color = Color.Black,
+                                offset = Offset(1.5f, 1.5f),
+                                blurRadius = 3f
+                            )
+                        ),
+                        modifier = Modifier
+                            .background(Color(0xB3000000), shape = RoundedCornerShape(4.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // Controls Overlay with Smooth Fade
+            AnimatedVisibility(
+                visible = controlsVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                ) {
+                    // Center Play/Pause & 5s Seek Buttons
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .fillMaxWidth()
+                            .padding(horizontal = 36.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = {
-                            player.seekTo((player.currentPosition - 5_000L).coerceAtLeast(0L))
-                            showControls()
-                        }, modifier = Modifier.size(52.dp)) { SeekFiveIcon(backward = true) }
-                        IconButton(onClick = {
-                            if (player.isPlaying) player.pause() else player.play()
-                            showControls()
-                        }, modifier = Modifier.size(64.dp)) { PlayPauseIcon(isPlaying) }
-                        IconButton(onClick = {
-                            val upperBound = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
-                            player.seekTo((player.currentPosition + 5_000L).coerceAtMost(upperBound))
-                            showControls()
-                        }, modifier = Modifier.size(52.dp)) { SeekFiveIcon(backward = false) }
-                    }
-                    Column(
-                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                    ) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "${formatMediaTime(seekPositionMs)} / ${formatMediaTime(durationMs)}",
-                                color = Color.White,
-                                modifier = Modifier.weight(1f),
-                            )
-                            IconButton(onClick = { fullscreen = !fullscreen; showControls() }) {
-                                FullscreenIcon(exit = fullscreen)
-                            }
+                        IconButton(
+                            onClick = {
+                                val newPos = (player.currentPosition - 5_000L).coerceAtLeast(0L)
+                                player.seekTo(newPos)
+                                seekPositionMs = newPos
+                                onPositionChanged(newPos)
+                                showControls()
+                            },
+                            modifier = Modifier.size(52.dp)
+                        ) {
+                            SeekFiveIcon(backward = true)
                         }
+
+                        IconButton(
+                            onClick = {
+                                if (player.isPlaying) player.pause() else player.play()
+                                showControls()
+                            },
+                            modifier = Modifier.size(64.dp)
+                        ) {
+                            PlayPauseIcon(isPlaying)
+                        }
+
+                        IconButton(
+                            onClick = {
+                                val upperBound = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+                                val newPos = (player.currentPosition + 5_000L).coerceAtMost(upperBound)
+                                player.seekTo(newPos)
+                                seekPositionMs = newPos
+                                onPositionChanged(newPos)
+                                showControls()
+                            },
+                            modifier = Modifier.size(52.dp)
+                        ) {
+                            SeekFiveIcon(backward = false)
+                        }
+                    }
+
+                    // Bottom Bar: YouTube Red Timeline, Time, Speed Selector & Fullscreen
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        // YouTube Red Scrubber Slider
                         Slider(
                             value = seekPositionMs.coerceAtMost(durationMs.coerceAtLeast(1L)).toFloat(),
-                            onValueChange = { seekPositionMs = it.toLong(); showControls() },
+                            onValueChange = {
+                                seekPositionMs = it.toLong()
+                                showControls()
+                            },
                             onValueChangeFinished = {
                                 player.seekTo(seekPositionMs)
                                 onPositionChanged(seekPositionMs)
@@ -421,7 +744,194 @@ private fun MediaPlayerContent(
                             },
                             valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
                             modifier = Modifier.fillMaxWidth().semantics { contentDescription = seekDescription },
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color(0xFFFF0000), // YouTube Red
+                                activeTrackColor = Color(0xFFFF0000),
+                                inactiveTrackColor = Color(0x55FFFFFF)
+                            )
                         )
+
+                        // Bottom Row: Time • Speed Button • Fullscreen Button
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "${formatMediaTime(seekPositionMs)} / ${formatMediaTime(durationMs)}",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                // CC Subtitle Button
+                                if (availableSubtitles.isNotEmpty()) {
+                                    Box {
+                                        Button(
+                                            onClick = {
+                                                if (availableSubtitles.size > 1) {
+                                                    showSubtitleMenu = true
+                                                } else {
+                                                    onToggleSubtitles()
+                                                }
+                                                showControls()
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (subtitlesEnabled) Color(0xFF2196F3) else Color(0x33FFFFFF)
+                                            ),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                            modifier = Modifier.height(32.dp)
+                                        ) {
+                                            Text(
+                                                text = "CC",
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+
+                                        if (availableSubtitles.size > 1) {
+                                            DropdownMenu(
+                                                expanded = showSubtitleMenu,
+                                                onDismissRequest = { showSubtitleMenu = false },
+                                                modifier = Modifier.background(Color(0xFF1E1E1E))
+                                            ) {
+                                                Text(
+                                                    stringResource(R.string.subtitles),
+                                                    color = Color.Gray,
+                                                    fontSize = 12.sp,
+                                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                                )
+
+                                                // Option: Off
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Text(
+                                                                text = stringResource(R.string.subtitles_off),
+                                                                color = if (!subtitlesEnabled) Color(0xFF2196F3) else Color.White,
+                                                                fontWeight = if (!subtitlesEnabled) FontWeight.Bold else FontWeight.Normal
+                                                            )
+                                                            if (!subtitlesEnabled) {
+                                                                Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                                                            }
+                                                        }
+                                                    },
+                                                    onClick = {
+                                                        if (subtitlesEnabled) onToggleSubtitles()
+                                                        showSubtitleMenu = false
+                                                        showControls()
+                                                    }
+                                                )
+
+                                                // Subtitle tracks
+                                                availableSubtitles.forEach { sub ->
+                                                    val isCurrent = subtitlesEnabled && selectedSubtitle?.path == sub.path
+                                                    DropdownMenuItem(
+                                                        text = {
+                                                            Row(
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                Text(
+                                                                    text = sub.name,
+                                                                    color = if (isCurrent) Color(0xFF2196F3) else Color.White,
+                                                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                                                    maxLines = 1
+                                                                )
+                                                                if (isCurrent) {
+                                                                    Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                                                                }
+                                                            }
+                                                        },
+                                                        onClick = {
+                                                            onSelectSubtitle(sub)
+                                                            if (!subtitlesEnabled) onToggleSubtitles()
+                                                            showSubtitleMenu = false
+                                                            showControls()
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Speed Selector Button
+                                Box {
+                                    Button(
+                                        onClick = { showSpeedMenu = true; showControls() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Text(
+                                            text = if (currentSpeed == 1.0f) "1.0x" else "${currentSpeed}x",
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = showSpeedMenu,
+                                        onDismissRequest = { showSpeedMenu = false },
+                                        modifier = Modifier.background(Color(0xFF1E1E1E))
+                                    ) {
+                                        Text(
+                                            stringResource(R.string.playback_speed),
+                                            color = Color.Gray,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                        )
+                                        speedOptions.forEach { speed ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            text = if (speed == 1.0f) stringResource(R.string.speed_normal) else "${speed}x",
+                                                            color = if (speed == currentSpeed) Color(0xFF2196F3) else Color.White,
+                                                            fontWeight = if (speed == currentSpeed) FontWeight.Bold else FontWeight.Normal
+                                                        )
+                                                        if (speed == currentSpeed) {
+                                                            Text("✓", color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                                                        }
+                                                    }
+                                                },
+                                                onClick = {
+                                                    currentSpeed = speed
+                                                    player.setPlaybackSpeed(speed)
+                                                    showSpeedMenu = false
+                                                    showControls()
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                IconButton(
+                                    onClick = { fullscreen = !fullscreen; showControls() },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    FullscreenIcon(exit = fullscreen)
+                                }
+                            }
+                        }
                     }
                 }
             }
