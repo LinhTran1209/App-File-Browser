@@ -15,6 +15,7 @@ import com.j2team.fileserver.core.network.PreviewProbe
 import com.j2team.fileserver.core.network.ComicManifest
 import com.j2team.fileserver.core.network.CastDevice
 import com.j2team.fileserver.core.network.CastControlRequest
+import com.j2team.fileserver.core.network.CastStatus
 import com.j2team.fileserver.feature.sync.RemoteChangePage
 import com.j2team.fileserver.feature.sync.SyncEntry
 import com.j2team.fileserver.feature.sync.ServerIdentityStore
@@ -409,6 +410,12 @@ class SessionRepository(
         request: CastControlRequest,
     ): Result<String> = authenticated(profile) { token ->
         transport.castControlResult(profile, token, request)
+    }
+
+    suspend fun castStatus(
+        profile: ServerProfile,
+    ): Result<CastStatus> = authenticated(profile) { token ->
+        transport.castStatusResult(profile, token)
     }
 
     fun clear(profileId: String) {

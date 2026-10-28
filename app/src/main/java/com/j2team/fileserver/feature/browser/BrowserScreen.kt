@@ -460,6 +460,9 @@ fun BrowserScreen(
 
     if (preview != null && profile != null) {
         val images = resources.filter { !it.isDirectory && PreviewRouter.kind(it.name, it.mimeType) == PreviewKind.Image }
+        val media = resources.filter {
+            !it.isDirectory && PreviewRouter.kind(it.name, it.mimeType) in setOf(PreviewKind.Image, PreviewKind.Video, PreviewKind.Audio)
+        }
         val comics = resources.filter { !it.isDirectory && PreviewRouter.kind(it.name, it.mimeType) == PreviewKind.Comic }
         PreviewScreen(
             profile = profile,
@@ -467,6 +470,7 @@ fun BrowserScreen(
             transferStore = transferStore,
             sessionRepository = sessionRepository,
             imageSiblings = images,
+            mediaSiblings = media,
             onNavigateImage = { preview = it },
             comicSiblings = comics,
             onNavigateComic = { preview = it },

@@ -70,6 +70,7 @@ internal fun PreviewScreen(
     @Suppress("UNUSED_PARAMETER") transferStore: TransferStore,
     sessionRepository: SessionRepository,
     imageSiblings: List<RemoteResource> = emptyList(),
+    mediaSiblings: List<RemoteResource> = emptyList(),
     onNavigateImage: (RemoteResource) -> Unit = {},
     comicSiblings: List<RemoteResource> = emptyList(),
     onNavigateComic: (RemoteResource) -> Unit = {},
@@ -126,13 +127,27 @@ internal fun PreviewScreen(
     }
     LaunchedEffect(profile.id, item.path, kind) {
         val activeDevice = CastSessionManager.activeDevice
-        if (activeDevice != null && kind == PreviewKind.Image && CastSessionManager.activeFilePath != item.path) {
+        if (activeDevice != null && (kind == PreviewKind.Image || kind == PreviewKind.Audio) && CastSessionManager.activeFilePath != item.path) {
             CastSessionManager.castFile(
                 profile = profile,
                 sessionRepository = sessionRepository,
                 device = activeDevice,
                 filePath = item.path,
             )
+        }
+    }
+    LaunchedEffect(profile.id, item.path, mediaSiblings, imageSiblings) {
+        while (true) {
+            delay(1800)
+            if (System.currentTimeMillis() - CastSessionManager.lastLocalActionMs < 2500L) continue
+            val status = CastSessionManager.pollStatus(profile, sessionRepository) ?: continue
+            if (status.active && status.filePath.isNotBlank() && status.filePath != item.path) {
+                val target = mediaSiblings.firstOrNull { it.path == status.filePath }
+                    ?: imageSiblings.firstOrNull { it.path == status.filePath }
+                if (target != null) {
+                    onNavigateImage(target)
+                }
+            }
         }
     }
     LaunchedEffect(saveNotification) {
@@ -474,6 +489,8 @@ internal fun PreviewScreen(
                 profile = profile,
                 sessionRepository = sessionRepository,
                 filePath = item.path,
+                subtitleUrl = if (kind == PreviewKind.Video) CastSessionManager.currentMediaSubtitleUrl else "",
+                currentTimeSeconds = if (kind == PreviewKind.Video || kind == PreviewKind.Audio) CastSessionManager.currentMediaPositionSec else 0.0,
                 isMediaFile = kind == PreviewKind.Video || kind == PreviewKind.Audio,
                 onCastStarted = { device ->
                     saveNotification = "Đang truyền lên ${device.name}"

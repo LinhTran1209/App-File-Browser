@@ -58,6 +58,21 @@ data class CastControlRequest(
     val subtitleUrl: String = "",
     val startTime: Double = 0.0,
     val seekSeconds: Double = 0.0,
+    val playbackRate: Double = 0.0,
+)
+
+data class CastStatus(
+    val active: Boolean,
+    val device: CastDevice? = null,
+    val controlUrl: String = "",
+    val filePath: String = "",
+    val fileName: String = "",
+    val mediaType: String = "",
+    val state: String = "",
+    val currentTime: Double = 0.0,
+    val duration: Double = 0.0,
+    val playbackRate: Double = 1.0,
+    val updatedAt: Long = 0L,
 )
 
 private const val NETWORK_BUFFER_SIZE = 256 * 1024
@@ -1434,6 +1449,7 @@ class FileBrowserClient {
             .put("subtitleUrl", request.subtitleUrl)
             .put("startTime", request.startTime)
             .put("seekSeconds", request.seekSeconds)
+            .put("playbackRate", request.playbackRate)
             .toString()
             .toByteArray(Charsets.UTF_8)
         connection.outputStream.use { it.write(payload) }
@@ -1444,6 +1460,56 @@ class FileBrowserClient {
         } else {
             val body = connection.inputStream.bufferedReader().use { it.readText() }
             ApiResult(code, body)
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun castStatusResult(
+        profile: ServerProfile,
+        token: String?,
+    ): ApiResult<CastStatus> = try {
+        val url = profile.endpoint.trimEnd('/') + "/api/cast/status"
+        val connection = open(url, "GET")
+        connection.connectTimeout = 4_000
+        connection.readTimeout = 4_000
+        applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            ApiResult(code, error = IOException("Không thể lấy trạng thái Cast ($code)"))
+        } else {
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(body)
+            val active = json.optBoolean("active", false)
+            val devObj = json.optJSONObject("device")
+            val dev = if (devObj != null && devObj.optString("controlUrl").isNotBlank()) {
+                CastDevice(
+                    id = devObj.optString("id"),
+                    name = devObj.optString("name", "TV"),
+                    model = devObj.optString("model"),
+                    manufacturer = devObj.optString("manufacturer"),
+                    address = devObj.optString("address"),
+                    locationUrl = devObj.optString("locationUrl"),
+                    controlUrl = devObj.optString("controlUrl"),
+                    type = devObj.optString("type", "dlna"),
+                )
+            } else null
+            ApiResult(
+                code,
+                CastStatus(
+                    active = active,
+                    device = dev,
+                    controlUrl = json.optString("controlUrl"),
+                    filePath = json.optString("filePath"),
+                    fileName = json.optString("fileName"),
+                    mediaType = json.optString("mediaType"),
+                    state = json.optString("state"),
+                    currentTime = json.optDouble("currentTime", 0.0),
+                    duration = json.optDouble("duration", 0.0),
+                    playbackRate = json.optDouble("playbackRate", 1.0).let { if (it <= 0.0) 1.0 else it },
+                    updatedAt = json.optLong("updatedAt", 0L),
+                )
+            )
         }
     } catch (error: Throwable) {
         ApiResult(-1, error = error)

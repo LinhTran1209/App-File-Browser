@@ -577,6 +577,7 @@ private fun MediaPlayerContent(
             val position = player.currentPosition.coerceAtLeast(0L)
             seekPositionMs = position
             onPositionChanged(position)
+            CastSessionManager.currentMediaPositionSec = position / 1000.0
             durationMs = player.duration.coerceAtLeast(0L)
             delay(500)
         }
@@ -606,6 +607,102 @@ private fun MediaPlayerContent(
         }
     }
 
+    val activeSubUrl = remember(subtitlesEnabled, selectedSubtitle) {
+        if (subtitlesEnabled && selectedSubtitle != null) {
+            selectedSubtitle.url.ifBlank {
+                if (selectedSubtitle.path.isNotBlank()) "/api/raw" + selectedSubtitle.path else ""
+            }
+        } else ""
+    }
+    LaunchedEffect(activeSubUrl) {
+        CastSessionManager.currentMediaSubtitleUrl = activeSubUrl
+    }
+    val isCastingCurrent = CastSessionManager.isCasting
+    LaunchedEffect(player, isCastingCurrent) {
+        player.volume = if (isCastingCurrent) 0f else 1f
+        if (isCastingCurrent && !CastSessionManager.isPaused && !player.isPlaying) {
+            player.play()
+        }
+    }
+    LaunchedEffect(profile?.id, filePath, activeSubUrl, isCastingCurrent) {
+        val activeDevice = CastSessionManager.activeDevice
+        if (activeDevice != null && profile != null && sessionRepository != null && filePath.isNotBlank()) {
+            if (CastSessionManager.activeFilePath != filePath) {
+                CastSessionManager.castFile(
+                    profile = profile,
+                    sessionRepository = sessionRepository,
+                    device = activeDevice,
+                    filePath = filePath,
+                    subtitleUrl = activeSubUrl,
+                    startTimeSeconds = (player.currentPosition.coerceAtLeast(0L)) / 1000.0,
+                )
+            }
+        }
+    }
+    LaunchedEffect(player, profile?.id, filePath, isCastingCurrent) {
+        if (!isCastingCurrent || profile == null || sessionRepository == null) return@LaunchedEffect
+        while (currentCoroutineContext().isActive && CastSessionManager.isCasting) {
+            delay(1400)
+            if (System.currentTimeMillis() - CastSessionManager.lastLocalActionMs < 2200L) continue
+            val status = CastSessionManager.pollStatus(profile, sessionRepository) ?: continue
+            if (!status.active || (status.filePath.isNotBlank() && status.filePath != filePath)) continue
+            if (System.currentTimeMillis() - CastSessionManager.lastLocalActionMs < 2200L) continue
+
+            if (status.currentTime > 0.0) {
+                val tvMs = (status.currentTime * 1000.0).toLong()
+                if (kotlin.math.abs(tvMs - player.currentPosition) > 2500L) {
+                    player.seekTo(tvMs)
+                    seekPositionMs = tvMs
+                    onPositionChanged(tvMs)
+                }
+            }
+            if (status.playbackRate > 0.0 && !isLongPressing) {
+                val tvRate = status.playbackRate.toFloat()
+                if (kotlin.math.abs(tvRate - currentSpeed) > 0.05f) {
+                    currentSpeed = tvRate
+                    player.setPlaybackSpeed(tvRate)
+                }
+            }
+            if (status.state == "PAUSED" && player.isPlaying) {
+                player.pause()
+            } else if (status.state == "PLAYING" && !player.isPlaying) {
+                player.volume = 0f
+                player.play()
+            }
+        }
+    }
+
+    fun performSeek(targetMs: Long) {
+        player.seekTo(targetMs)
+        seekPositionMs = targetMs
+        onPositionChanged(targetMs)
+        CastSessionManager.currentMediaPositionSec = targetMs / 1000.0
+        if (CastSessionManager.isCasting && profile != null && sessionRepository != null) {
+            coroutineScope.launch {
+                CastSessionManager.seekTo(profile, sessionRepository, targetMs / 1000.0)
+            }
+        }
+    }
+
+    fun performSpeedChange(speed: Float) {
+        player.setPlaybackSpeed(speed)
+        if (CastSessionManager.isCasting && profile != null && sessionRepository != null) {
+            coroutineScope.launch {
+                CastSessionManager.setPlaybackRate(profile, sessionRepository, speed)
+            }
+        }
+    }
+
+    fun performTogglePlayPause() {
+        val pausing = player.isPlaying
+        if (pausing) player.pause() else player.play()
+        if (CastSessionManager.isCasting && profile != null && sessionRepository != null) {
+            coroutineScope.launch {
+                CastSessionManager.setPaused(profile, sessionRepository, pause = pausing)
+            }
+        }
+    }
+
     fun showControls() {
         controlsVisible = true
         controlsVersion++
@@ -625,14 +722,14 @@ private fun MediaPlayerContent(
                             val isLeft = offset.x < size.width / 2f
                             if (isLeft) {
                                 val newPos = (player.currentPosition - 5_000L).coerceAtLeast(0L)
-                                player.seekTo(newPos)
+                                performSeek(newPos)
                                 seekPositionMs = newPos
                                 onPositionChanged(newPos)
                                 doubleTapFeedback = "rewind"
                             } else {
                                 val upperBound = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
                                 val newPos = (player.currentPosition + 5_000L).coerceAtMost(upperBound)
-                                player.seekTo(newPos)
+                                performSeek(newPos)
                                 seekPositionMs = newPos
                                 onPositionChanged(newPos)
                                 doubleTapFeedback = "forward"
@@ -647,7 +744,7 @@ private fun MediaPlayerContent(
                             val job = coroutineScope.launch {
                                 delay(400)
                                 isLongPressing = true
-                                player.setPlaybackSpeed(1.5f)
+                                performSpeedChange(1.5f)
                             }
                             try {
                                 tryAwaitRelease()
@@ -655,7 +752,7 @@ private fun MediaPlayerContent(
                                 job.cancel()
                                 if (isLongPressing) {
                                     isLongPressing = false
-                                    player.setPlaybackSpeed(currentSpeed)
+                                    performSpeedChange(currentSpeed)
                                 }
                             }
                         }
@@ -824,7 +921,7 @@ private fun MediaPlayerContent(
                         IconButton(
                             onClick = {
                                 val newPos = (player.currentPosition - 5_000L).coerceAtLeast(0L)
-                                player.seekTo(newPos)
+                                performSeek(newPos)
                                 seekPositionMs = newPos
                                 onPositionChanged(newPos)
                                 showControls()
@@ -836,7 +933,7 @@ private fun MediaPlayerContent(
 
                         IconButton(
                             onClick = {
-                                if (player.isPlaying) player.pause() else player.play()
+                                performTogglePlayPause()
                                 showControls()
                             },
                             modifier = Modifier.size(64.dp)
@@ -848,7 +945,7 @@ private fun MediaPlayerContent(
                             onClick = {
                                 val upperBound = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
                                 val newPos = (player.currentPosition + 5_000L).coerceAtMost(upperBound)
-                                player.seekTo(newPos)
+                                performSeek(newPos)
                                 seekPositionMs = newPos
                                 onPositionChanged(newPos)
                                 showControls()
@@ -1190,7 +1287,7 @@ private fun MediaPlayerContent(
                                                 },
                                                 onClick = {
                                                     currentSpeed = speed
-                                                    player.setPlaybackSpeed(speed)
+                                                    performSpeedChange(speed)
                                                     showSpeedMenu = false
                                                     showControls()
                                                 }
@@ -1199,7 +1296,7 @@ private fun MediaPlayerContent(
                                     }
                                 }
 
-                                if (profile != null && sessionRepository != null && filePath.isNotBlank()) {
+                                if (fullscreen && profile != null && sessionRepository != null && filePath.isNotBlank()) {
                                     CastButton(
                                         onClick = {
                                             showCastDialog = true
@@ -1226,7 +1323,10 @@ private fun MediaPlayerContent(
                                             subtitleUrl = activeSubUrl,
                                             currentTimeSeconds = seekPositionMs / 1000.0,
                                             isMediaFile = true,
-                                            onCastStarted = { player.pause() },
+                                            onCastStarted = {
+                                                player.volume = 0f
+                                                if (!player.isPlaying) player.play()
+                                            },
                                             onDismiss = { showCastDialog = false }
                                         )
                                     }
