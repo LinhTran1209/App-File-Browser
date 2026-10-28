@@ -127,7 +127,7 @@ internal fun PreviewScreen(
     }
     LaunchedEffect(profile.id, item.path, kind) {
         val activeDevice = CastSessionManager.activeDevice
-        if (activeDevice != null && (kind == PreviewKind.Image || kind == PreviewKind.Audio) && CastSessionManager.activeFilePath != item.path) {
+        if (activeDevice != null && kind == PreviewKind.Image && CastSessionManager.activeFilePath != item.path) {
             CastSessionManager.castFile(
                 profile = profile,
                 sessionRepository = sessionRepository,
@@ -136,14 +136,18 @@ internal fun PreviewScreen(
             )
         }
     }
-    LaunchedEffect(profile.id, item.path, mediaSiblings, imageSiblings) {
+    LaunchedEffect(profile.id, item.path, kind, mediaSiblings, imageSiblings) {
         while (true) {
             delay(1800)
             if (System.currentTimeMillis() - CastSessionManager.lastLocalActionMs < 2500L) continue
-            val status = CastSessionManager.pollStatus(profile, sessionRepository) ?: continue
-            if (status.active && status.filePath.isNotBlank() && status.filePath != item.path) {
-                val target = mediaSiblings.firstOrNull { it.path == status.filePath }
-                    ?: imageSiblings.firstOrNull { it.path == status.filePath }
+            val remotePath = if (kind == PreviewKind.Video || kind == PreviewKind.Audio) {
+                CastSessionManager.activeFilePath.orEmpty()
+            } else {
+                CastSessionManager.pollStatus(profile, sessionRepository)?.takeIf { it.active }?.filePath.orEmpty()
+            }
+            if (remotePath.isNotBlank() && remotePath != item.path) {
+                val target = mediaSiblings.firstOrNull { it.path == remotePath }
+                    ?: imageSiblings.firstOrNull { it.path == remotePath }
                 if (target != null) {
                     onNavigateImage(target)
                 }

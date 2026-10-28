@@ -71,6 +71,8 @@ internal object CastSessionManager {
     var currentMediaPositionSec by mutableDoubleStateOf(0.0)
     var currentMediaSubtitleUrl by mutableStateOf("")
     var lastLocalActionMs by mutableLongStateOf(0L)
+    private var lastCastDispatchKey: String = ""
+    private var lastCastDispatchMs: Long = 0L
 
     val isCasting: Boolean
         get() = activeDevice != null
@@ -86,8 +88,20 @@ internal object CastSessionManager {
         filePath: String,
         subtitleUrl: String = "",
         startTimeSeconds: Double = 0.0,
+        force: Boolean = false,
     ): Result<String> {
+        val now = System.currentTimeMillis()
+        val dispatchKey = "${device.controlUrl}|$filePath"
+        if (!force && dispatchKey == lastCastDispatchKey && now - lastCastDispatchMs < 2500L) {
+            return Result.success("already-casting")
+        }
+        lastCastDispatchKey = dispatchKey
+        lastCastDispatchMs = now
         markLocalAction()
+        val prevDevice = activeDevice
+        val prevFilePath = activeFilePath
+        activeDevice = device
+        activeFilePath = filePath
         return withContext(Dispatchers.IO) {
             sessionRepository.castControl(
                 profile = profile,
@@ -105,6 +119,13 @@ internal object CastSessionManager {
                 isPaused = false
                 playbackRate = 1.0f
                 markLocalAction()
+            }.onFailure {
+                if (prevDevice == null) {
+                    activeDevice = null
+                    activeFilePath = null
+                } else {
+                    activeFilePath = prevFilePath
+                }
             }
         }
     }

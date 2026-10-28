@@ -624,7 +624,7 @@ private fun MediaPlayerContent(
             player.play()
         }
     }
-    LaunchedEffect(profile?.id, filePath, activeSubUrl, isCastingCurrent) {
+    LaunchedEffect(profile?.id, filePath, isCastingCurrent) {
         val activeDevice = CastSessionManager.activeDevice
         if (activeDevice != null && profile != null && sessionRepository != null && filePath.isNotBlank()) {
             if (CastSessionManager.activeFilePath != filePath) {
