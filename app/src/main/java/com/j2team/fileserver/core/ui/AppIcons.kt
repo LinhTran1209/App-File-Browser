@@ -21,7 +21,9 @@ object AppIcons {
     @DrawableRes val SortDescending = R.drawable.ic_sort_descending
     @DrawableRes val File = R.drawable.ic_file
     @DrawableRes val Video = R.drawable.ic_video
+    @DrawableRes val Audio = R.drawable.ic_audio
     @DrawableRes val Comic = R.drawable.ic_comic
+    @DrawableRes val Cast = R.drawable.ic_cast
     @DrawableRes val List = R.drawable.ic_list
     @DrawableRes val Grid = R.drawable.ic_grid
     @DrawableRes val FolderClassic = R.drawable.ic_folder_classic

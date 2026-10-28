@@ -13,6 +13,8 @@ import com.j2team.fileserver.core.model.AdminDirectoryListing
 import com.j2team.fileserver.core.network.FileBrowserClient
 import com.j2team.fileserver.core.network.PreviewProbe
 import com.j2team.fileserver.core.network.ComicManifest
+import com.j2team.fileserver.core.network.CastDevice
+import com.j2team.fileserver.core.network.CastControlRequest
 import com.j2team.fileserver.feature.sync.RemoteChangePage
 import com.j2team.fileserver.feature.sync.SyncEntry
 import com.j2team.fileserver.feature.sync.ServerIdentityStore
@@ -385,6 +387,28 @@ class SessionRepository(
         destination: File,
     ): Result<File> = authenticated(profile) { token ->
         transport.downloadComicPageResult(profile, token, remotePath, pageIndex, destination)
+    }
+
+    suspend fun downloadPreviewImage(
+        profile: ServerProfile,
+        remotePath: String,
+        destination: File,
+    ): Result<File> = authenticated(profile) { token ->
+        transport.downloadPreviewImageResult(profile, token, remotePath, destination)
+    }
+
+    suspend fun castDevices(
+        profile: ServerProfile,
+        refresh: Boolean = false,
+    ): Result<List<CastDevice>> = authenticated(profile) { token ->
+        transport.castDevicesResult(profile, token, refresh)
+    }
+
+    suspend fun castControl(
+        profile: ServerProfile,
+        request: CastControlRequest,
+    ): Result<String> = authenticated(profile) { token ->
+        transport.castControlResult(profile, token, request)
     }
 
     fun clear(profileId: String) {

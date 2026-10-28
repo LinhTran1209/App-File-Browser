@@ -86,6 +86,7 @@ internal fun PreviewScreen(
     val imageIndex = remember(item.path, imageSiblings) { imageSiblings.indexOfFirst { it.path == item.path } }
 
     var showHud by remember { mutableStateOf(true) }
+    var showCastDialog by remember { mutableStateOf(false) }
 
     // Text Editor state
     var isEditingText by remember(item.path) { mutableStateOf(false) }
@@ -109,12 +110,30 @@ internal fun PreviewScreen(
     }
     LaunchedEffect(profile.id, item.path, kind, temporaryFile) {
         if (kind == null || !requiresDownloadedFile(kind!!)) return@LaunchedEffect
-        withContext(Dispatchers.IO) { sessionRepository.download(profile, item.path, temporaryFile) }
+        val downloadResult = withContext(Dispatchers.IO) {
+            if (kind == PreviewKind.Image && PreviewRouter.isHeic(item.name)) {
+                sessionRepository.downloadPreviewImage(profile, item.path, temporaryFile)
+            } else {
+                sessionRepository.download(profile, item.path, temporaryFile)
+            }
+        }
+        downloadResult
             .onSuccess { downloadedFile = it }
             .onFailure {
                 temporaryFile.delete()
                 error = it.message ?: "Unable to download preview"
             }
+    }
+    LaunchedEffect(profile.id, item.path, kind) {
+        val activeDevice = CastSessionManager.activeDevice
+        if (activeDevice != null && kind == PreviewKind.Image && CastSessionManager.activeFilePath != item.path) {
+            CastSessionManager.castFile(
+                profile = profile,
+                sessionRepository = sessionRepository,
+                device = activeDevice,
+                filePath = item.path,
+            )
+        }
     }
     LaunchedEffect(saveNotification) {
         if (saveNotification != null) {
@@ -264,6 +283,14 @@ internal fun PreviewScreen(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(end = 8.dp)
                     )
+
+                    // Cast to TV Action (for Image, Video, Audio)
+                    if (kind == PreviewKind.Image || kind == PreviewKind.Video || kind == PreviewKind.Audio) {
+                        CastButton(
+                            onClick = { showCastDialog = true },
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                    }
 
                     // Text Editor Actions (Sửa / Lưu)
                     if (kind == PreviewKind.Text) {
@@ -442,6 +469,18 @@ internal fun PreviewScreen(
         }
 
         // 4. Save Success Floating Notification Banner
+        if (showCastDialog) {
+            CastDialog(
+                profile = profile,
+                sessionRepository = sessionRepository,
+                filePath = item.path,
+                isMediaFile = kind == PreviewKind.Video || kind == PreviewKind.Audio,
+                onCastStarted = { device ->
+                    saveNotification = "Đang truyền lên ${device.name}"
+                },
+                onDismiss = { showCastDialog = false }
+            )
+        }
         AnimatedVisibility(
             visible = saveNotification != null,
             enter = fadeIn() + slideInVertically { -it },

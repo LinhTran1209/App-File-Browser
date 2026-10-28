@@ -1132,6 +1132,7 @@ private fun ResourceVisual(
     val canThumbnail = previewKind == PreviewKind.Image || previewKind == PreviewKind.Video
     val fallbackIcon = when (previewKind) {
         PreviewKind.Video -> AppIcons.Video
+        PreviewKind.Audio -> AppIcons.Audio
         PreviewKind.Comic -> AppIcons.Comic
         else -> AppIcons.File
     }

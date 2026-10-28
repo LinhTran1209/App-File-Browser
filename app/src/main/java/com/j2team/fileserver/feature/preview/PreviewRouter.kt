@@ -23,6 +23,8 @@ object PreviewRouter {
 
     fun extension(name: String): String = name.substringAfterLast('.', "").lowercase()
 
+    fun isHeic(name: String): Boolean = extension(name) in setOf("heic", "heif")
+
     fun kind(name: String): PreviewKind = when (extension(name)) {
         in image -> PreviewKind.Image
         in comic -> PreviewKind.Comic

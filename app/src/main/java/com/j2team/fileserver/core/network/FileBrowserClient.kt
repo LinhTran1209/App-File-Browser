@@ -39,6 +39,27 @@ data class PreviewProbe(val mimeType: String?, val sample: ByteArray)
 data class ComicPage(val index: Int, val name: String)
 data class ComicManifest(val title: String, val pages: List<ComicPage>, val count: Int)
 
+data class CastDevice(
+    val id: String,
+    val name: String,
+    val model: String,
+    val manufacturer: String,
+    val address: String,
+    val locationUrl: String,
+    val controlUrl: String,
+    val type: String,
+)
+
+data class CastControlRequest(
+    val action: String,
+    val controlUrl: String,
+    val deviceAddr: String = "",
+    val filePath: String = "",
+    val subtitleUrl: String = "",
+    val startTime: Double = 0.0,
+    val seekSeconds: Double = 0.0,
+)
+
 private const val NETWORK_BUFFER_SIZE = 256 * 1024
 private const val TUS_CHUNK_SIZE = 32L * 1024L * 1024L
 
@@ -483,7 +504,7 @@ class FileBrowserClient {
         remotePath: String,
         destination: File,
     ): ApiResult<File> = try {
-        val connection = open(apiUrl(profile, "/api/preview/thumb", remotePath), "GET")
+        val connection = open(apiUrl(profile, "/api/preview/thumb", remotePath), "GET").apply { readTimeout = 25_000 }
         if (!token.isNullOrBlank()) connection.setRequestProperty("X-Auth", token)
         val code = connection.responseCode
         if (code !in 200..299) return ApiResult(code, error = IOException("Thumbnail unavailable ($code)"))
@@ -1308,6 +1329,121 @@ class FileBrowserClient {
                 temp.renameTo(destination)
             }
             ApiResult(code, destination)
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    /**
+     * Downloads a preview-ready image (passing `?inline=true` so the server converts `.heic`/`.heif`
+     * photos to full-resolution JPEG while keeping normal `/api/raw` downloads untouched).
+     */
+    fun downloadPreviewImageResult(
+        profile: ServerProfile,
+        token: String? = null,
+        remotePath: String,
+        destination: File,
+    ): ApiResult<File> = try {
+        require(remotePath.isNotBlank()) { "Remote path is required" }
+        val url = rawUrl(profile, remotePath) + "?inline=true"
+        val connection = open(url, "GET")
+        connection.readTimeout = 30_000
+        applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            downloadResult(profile, token, remotePath, destination)
+        } else {
+            destination.parentFile?.mkdirs()
+            val temporary = File(destination.parentFile ?: File("."), ".${destination.name}.part")
+            try {
+                connection.inputStream.use { input ->
+                    temporary.outputStream().buffered().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (destination.exists() && !destination.delete()) throw IOException("Unable to replace destination")
+                if (!temporary.renameTo(destination)) throw IOException("Unable to finalize preview download")
+                ApiResult(code, destination)
+            } finally {
+                if (temporary.exists()) temporary.delete()
+            }
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun castDevicesResult(
+        profile: ServerProfile,
+        token: String?,
+        refresh: Boolean = false,
+    ): ApiResult<List<CastDevice>> = try {
+        val url = profile.endpoint.trimEnd('/') + "/api/cast/devices" + if (refresh) "?refresh=true" else ""
+        val connection = open(url, "GET")
+        connection.connectTimeout = 8_000
+        connection.readTimeout = 12_000
+        applyAuthorization(connection, token)
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            ApiResult(code, error = IOException(requestError("Không thể quét thiết bị Cast", code, connection)))
+        } else {
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(body)
+            val arr = json.optJSONArray("devices") ?: JSONArray()
+            val devices = buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    add(
+                        CastDevice(
+                            id = obj.optString("id"),
+                            name = obj.optString("name", "TV"),
+                            model = obj.optString("model"),
+                            manufacturer = obj.optString("manufacturer"),
+                            address = obj.optString("address"),
+                            locationUrl = obj.optString("locationUrl"),
+                            controlUrl = obj.optString("controlUrl"),
+                            type = obj.optString("type", "dlna"),
+                        )
+                    )
+                }
+            }
+            ApiResult(code, devices)
+        }
+    } catch (error: Throwable) {
+        ApiResult(-1, error = error)
+    }
+
+    fun castControlResult(
+        profile: ServerProfile,
+        token: String?,
+        request: CastControlRequest,
+    ): ApiResult<String> = try {
+        val url = profile.endpoint.trimEnd('/') + "/api/cast/control"
+        val connection = open(url, "POST").apply {
+            doOutput = true
+            connectTimeout = 8_000
+            readTimeout = 15_000
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("Accept", "application/json")
+            applyAuthorization(this, token)
+        }
+        val payload = JSONObject()
+            .put("action", request.action)
+            .put("controlUrl", request.controlUrl)
+            .put("deviceAddr", request.deviceAddr)
+            .put("filePath", request.filePath)
+            .put("subtitleUrl", request.subtitleUrl)
+            .put("startTime", request.startTime)
+            .put("seekSeconds", request.seekSeconds)
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        connection.outputStream.use { it.write(payload) }
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            val errText = connection.errorStream?.bufferedReader()?.use { it.readText() }?.trim().orEmpty()
+            ApiResult(code, error = IOException(errText.ifEmpty { "Lỗi điều khiển Cast ($code)" }))
+        } else {
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            ApiResult(code, body)
         }
     } catch (error: Throwable) {
         ApiResult(-1, error = error)

@@ -453,6 +453,9 @@ internal fun MediaPreview(
             MediaPlayerContent(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 context = context,
+                profile = profile,
+                sessionRepository = sessionRepository,
+                filePath = item.path,
                 rawUrl = sessionRepository.rawUrl(profile, item.path),
                 token = token!!,
                 mimeType = mimeType,
@@ -503,6 +506,9 @@ private fun MediaPlayerContent(
     mimeType: String,
     initialPositionMs: Long,
     reprepareGeneration: Int,
+    profile: ServerProfile? = null,
+    sessionRepository: SessionRepository? = null,
+    filePath: String = "",
     availableSubtitles: List<AppSubtitleTrack> = emptyList(),
     selectedSubtitle: AppSubtitleTrack? = null,
     onSelectSubtitle: (AppSubtitleTrack) -> Unit = {},
@@ -536,6 +542,7 @@ private fun MediaPlayerContent(
         mutableStateOf(extractAudioTracks(player.currentTracks, originalAudioLabel, dubbingAudioLabel))
     }
     var showAudioMenu by remember { mutableStateOf(false) }
+    var showCastDialog by remember { mutableStateOf(false) }
     var isLongPressing by remember { mutableStateOf(false) }
     var doubleTapFeedback by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
@@ -574,8 +581,8 @@ private fun MediaPlayerContent(
             delay(500)
         }
     }
-    LaunchedEffect(controlsVisible, controlsVersion, isPlaying) {
-        if (controlsVisible && isPlaying) {
+    LaunchedEffect(controlsVisible, controlsVersion, isPlaying, showCastDialog, showSubtitleMenu, showAudioMenu, showSpeedMenu) {
+        if (controlsVisible && isPlaying && !showCastDialog && !showSubtitleMenu && !showAudioMenu && !showSpeedMenu) {
             delay(3_000)
             controlsVisible = false
         }
@@ -869,6 +876,11 @@ private fun MediaPlayerContent(
                             },
                             onValueChangeFinished = {
                                 player.seekTo(seekPositionMs)
+                                if (CastSessionManager.isCasting && CastSessionManager.activeFilePath == filePath && profile != null && sessionRepository != null) {
+                                    coroutineScope.launch {
+                                        CastSessionManager.seekTo(profile, sessionRepository, seekPositionMs / 1000.0)
+                                    }
+                                }
                                 onPositionChanged(seekPositionMs)
                                 showControls()
                             },
@@ -1187,11 +1199,37 @@ private fun MediaPlayerContent(
                                     }
                                 }
 
+                                if (profile != null && sessionRepository != null && filePath.isNotBlank()) {
+                                    CastButton(
+                                        onClick = {
+                                            showCastDialog = true
+                                            showControls()
+                                        }
+                                    )
+                                }
+
                                 IconButton(
                                     onClick = { fullscreen = !fullscreen; showControls() },
                                     modifier = Modifier.size(36.dp)
                                 ) {
                                     FullscreenIcon(exit = fullscreen)
+                                    if (showCastDialog && profile != null && sessionRepository != null) {
+                                        val activeSubUrl = if (subtitlesEnabled && selectedSubtitle != null) {
+                                            selectedSubtitle.url.ifBlank {
+                                                if (selectedSubtitle.path.isNotBlank()) "/api/raw" + selectedSubtitle.path else ""
+                                            }
+                                        } else ""
+                                        CastDialog(
+                                            profile = profile,
+                                            sessionRepository = sessionRepository,
+                                            filePath = filePath,
+                                            subtitleUrl = activeSubUrl,
+                                            currentTimeSeconds = seekPositionMs / 1000.0,
+                                            isMediaFile = true,
+                                            onCastStarted = { player.pause() },
+                                            onDismiss = { showCastDialog = false }
+                                        )
+                                    }
                                 }
                             }
                         }
